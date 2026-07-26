@@ -4,7 +4,9 @@
 
 BuildProof solves a specific, chronic trust problem in construction: contractors complete work, owners dispute it, and both sides spend months in court waiting for a human adjudicator who wasn't there. BuildProof replaces that intermediary with GenLayer's decentralized AI validators — multiple independent LLMs evaluate the on-chain evidence, reach consensus, and automatically settle the escrow. No lawyers. No manual release. No single point of trust.
 
-**Live on StudioNet:** `0xCb593F2e171f815601F2779f502757B094A148be`
+**Live demo:** https://buildproof-topaz.vercel.app
+
+**Contract on StudioNet:** `0xCb593F2e171f815601F2779f502757B094A148be`
 
 ---
 

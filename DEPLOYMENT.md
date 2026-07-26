@@ -1,5 +1,10 @@
 # BuildProof — Deployment Guide
 
+**Live demo:** https://buildproof-topaz.vercel.app
+**Contract:** `0xCb593F2e171f815601F2779f502757B094A148be` (StudioNet)
+
+---
+
 ## Prerequisites
 
 - Python 3.12+
@@ -29,8 +34,6 @@ cd frontend && npm install
 genvm-lint check contracts/construction_escrow.py --json
 ```
 
-Fix every error and warning before deploying.
-
 ---
 
 ## 3 — Run Direct Tests
@@ -39,30 +42,28 @@ Fix every error and warning before deploying.
 pytest tests/direct -v
 ```
 
-All tests must pass before deployment.
-
 ---
 
-## 4 — Set Up Wallet
+## 4 — Set Up Wallets
 
 1. Open GenLayer Studio: https://studio.genlayer.com
-2. Create or import a wallet.
-3. Fund your wallet from the StudioNet faucet.
-4. Export your private key.
+2. Create or import wallets (Owner + Contractor).
+3. Fund from the StudioNet faucet.
+4. Export private keys — set as env vars only, never hardcode.
 
 ```bash
-export OWNER_PRIVATE_KEY=0x...
-export CONTRACTOR_PRIVATE_KEY=0x...
-export OTHER_PRIVATE_KEY=0x...
+export DEPLOYER_PK=0x...
+export OWNER_PK=0x...
+export CONTRACTOR_PK=0x...
 ```
 
 ---
 
-## 5 — Deploy to StudioNet
+## 5 — Deploy Contract to StudioNet
 
 ```bash
-cd deploy
-npx ts-node deploy.ts
+cd frontend
+DEPLOYER_PK=0x<your-key> npx tsx deploy_contract.ts
 ```
 
 Copy the `contractAddress` from the output.
@@ -77,14 +78,18 @@ cp .env.local.example .env.local
 ```
 
 Edit `.env.local`:
-```
+```env
+NEXT_PUBLIC_GENLAYER_RPC_URL=https://studio.genlayer.com/api
+NEXT_PUBLIC_GENLAYER_CHAIN_ID=61999
+NEXT_PUBLIC_GENLAYER_CHAIN_NAME=GenLayer Studio
+NEXT_PUBLIC_GENLAYER_SYMBOL=GEN
 NEXT_PUBLIC_CONTRACT_ADDRESS=0x<your-contract-address>
 NEXT_PUBLIC_NETWORK=studionet
 ```
 
 ---
 
-## 7 — Start Frontend
+## 7 — Run Locally
 
 ```bash
 cd frontend
@@ -95,7 +100,25 @@ Open http://localhost:3000
 
 ---
 
-## 8 — Run Integration Tests
+## 8 — Deploy Frontend to Vercel
+
+```bash
+cd frontend
+npx vercel login          # one-time — browser auth
+npx vercel --yes          # preview deploy
+npx vercel deploy --prod  # production
+```
+
+Set env vars on Vercel after first deploy:
+```bash
+npx vercel env add NEXT_PUBLIC_CONTRACT_ADDRESS production
+# repeat for all NEXT_PUBLIC_* vars
+npx vercel deploy --prod  # redeploy to bake in env vars
+```
+
+---
+
+## 9 — Run Integration Tests
 
 ```bash
 gltest tests/integration -v -s
@@ -103,35 +126,55 @@ gltest tests/integration -v -s
 
 ---
 
-## Project State Machine
+## Project Status Flow
 
 ```
-Draft → Accepted → Escrowed → Evidence Submitted
-     → Under Review → [AI Evaluation]
-     → Approved → Finalized  (payment released)
-     → Rejected → Appealed → Evidence Submitted → Under Review → ...
-     → Rejected → Finalized  (owner refund)
+draft → accepted → escrowed → evidence_submitted → under_review
+                                                         │
+                                         ┌───────────────┤
+                                         ▼               ▼
+                                     approved         rejected
+                                         │               │
+                                     finalized       appealed → evidence_submitted
+                                  (payment_released)      │         (loop, max 3×)
+                                                      finalized
+                                                    (owner refund)
+cancelled  ← (owner cancels before evidence_submitted)
 ```
 
 ---
 
 ## Contract ABI Summary
 
-| Method | Access | Description |
+| Method | Caller | Description |
 |--------|--------|-------------|
-| `create_project` | Owner | Create project with inspection requirements |
-| `accept_project` | Contractor | Accept the project |
-| `deposit_escrow` | Owner | Lock funds in escrow (payable) |
-| `submit_evidence` | Owner/Contractor | Add evidence item |
-| `request_inspection` | Contractor | Move to Under Review |
-| `evaluate_completion` | Anyone | Trigger AI validator consensus |
-| `submit_appeal` | Owner/Contractor | Appeal a rejected decision |
-| `reopen_for_evidence` | Owner/Contractor | Reopen after appeal |
-| `release_payment` | Anyone | Release escrow to contractor (approved) |
-| `refund_owner` | Owner | Refund escrow to owner (rejected) |
-| `project_details` | View | Get project metadata |
-| `milestone_status` | View | Get inspections + evidence list |
-| `consensus_status` | View | Get AI decision + appeals |
-| `get_owner_projects` | View | List project IDs by owner |
-| `get_contractor_projects` | View | List project IDs by contractor |
-| `get_all_projects` | View | List all project summaries |
+| `create_project` | Owner | Create project, assign contractor, set inspections |
+| `accept_project` | Assigned contractor only | Accept the project |
+| `deposit_escrow` | Owner | Lock GEN escrow — must match `contract_value` |
+| `finalize_escrow` | Either party | Activate escrow deposited before acceptance |
+| `submit_evidence` | Owner or Contractor | Add evidence item on-chain |
+| `request_inspection` | Either party | Move to UNDER_REVIEW |
+| `evaluate_completion` | Either party | Trigger GenLayer AI consensus + web verification |
+| `submit_appeal` | Either party | Appeal REJECTED decision (max 3 rounds) |
+| `reopen_for_evidence` | Either party | Reopen after appeal for more evidence |
+| `cancel_project` | Owner | Cancel before evidence submitted, return escrow |
+| `project_details` | View | Full project metadata |
+| `milestone_status` | View | Inspections + full evidence list |
+| `consensus_status` | View | AI decision, confidence, appeals |
+| `get_owner_projects` | View | Project IDs by owner |
+| `get_contractor_projects` | View | Project IDs by contractor |
+| `get_all_projects` | View | All project summaries |
+
+**Removed (StudioNet incompatible):** `release_payment`, `refund_owner` — settlement is automatic inside `evaluate_completion`. `gl.transfer()` does not exist on StudioNet; will be restored at mainnet.
+
+---
+
+## Network
+
+| Property | Value |
+|----------|-------|
+| Network | GenLayer StudioNet |
+| Chain ID | 61999 |
+| RPC | https://studio.genlayer.com/api |
+| Explorer | https://explorer-studio.genlayer.com |
+| Rate limit | 500 req/hour |
