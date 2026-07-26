@@ -29,6 +29,7 @@ export function statusLabel(status: ProjectStatus): string {
     rejected: "Rejected",
     appealed: "Appealed",
     finalized: "Finalized",
+    cancelled: "Cancelled",
   };
   return labels[status] ?? status;
 }
