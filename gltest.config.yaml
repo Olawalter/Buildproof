@@ -1,0 +1,7 @@
+network: studionet
+accounts:
+  - private_key: "${OWNER_PRIVATE_KEY}"
+  - private_key: "${CONTRACTOR_PRIVATE_KEY}"
+  - private_key: "${OTHER_PRIVATE_KEY}"
+timeout: 120
+retries: 3

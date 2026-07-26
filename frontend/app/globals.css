@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 5%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 7%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 5%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 22 100% 53%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 32% 12%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 32% 12%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 217 32% 12%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 32% 15%;
+    --input: 217 32% 15%;
+    --ring: 22 100% 53%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-bp-darker text-white antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+}
+
+@layer utilities {
+  .glass {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(12px);
+  }
+
+  .glass-hover {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(12px);
+    transition: all 0.2s;
+  }
+  .glass-hover:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+
+  .gradient-orange {
+    @apply bg-gradient-to-r from-bp-orange to-bp-gold;
+  }
+
+  .text-gradient {
+    @apply bg-gradient-to-r from-bp-orange via-bp-gold to-bp-orange bg-clip-text text-transparent;
+    background-size: 200% auto;
+    animation: shimmer 4s linear infinite;
+  }
+
+  .grid-bg {
+    background-image: linear-gradient(rgba(249, 115, 22, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(249, 115, 22, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+}
