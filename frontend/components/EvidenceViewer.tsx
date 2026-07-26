@@ -19,7 +19,7 @@ const EVIDENCE_ICONS: Record<EvidenceType, React.ElementType> = {
   certificate: Award,
   permit: FileCheck,
   drawing: PenTool,
-  dispute: AlertOctagon,
+  other: AlertOctagon,
 };
 
 const EVIDENCE_COLORS: Record<EvidenceType, string> = {
@@ -28,7 +28,7 @@ const EVIDENCE_COLORS: Record<EvidenceType, string> = {
   certificate: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20",
   permit: "text-bp-gold bg-bp-gold/10 border-bp-gold/20",
   drawing: "text-sky-400 bg-sky-400/10 border-sky-400/20",
-  dispute: "text-red-400 bg-red-400/10 border-red-400/20",
+  other: "text-red-400 bg-red-400/10 border-red-400/20",
 };
 
 interface EvidenceViewerProps {
