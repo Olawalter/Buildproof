@@ -259,7 +259,7 @@ Private keys are never hardcoded in source — all scripts read from environment
 
 ## Path Forward
 
-- **Mainnet deployment** — restore `gl.transfer()` calls for actual GEN movement (removed for StudioNet compatibility; StudioNet does not expose `gl.transfer`)
+- **Mainnet deployment** — contract is already StudioNet-compatible using `_send_gen()` via `@gl.evm.contract_interface`; real GEN transfers confirmed on-chain (Project 2, tx `0xdf8abbaf`)
 - **IPFS evidence storage** — frontend upload flow to pin documents to IPFS before submitting the URL on-chain
 - **Contractor marketplace** — owners browse available contractors; contractors bid on projects
 - **Multi-milestone projects** — partial escrow releases per milestone rather than single final release
