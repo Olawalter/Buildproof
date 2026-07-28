@@ -34,7 +34,7 @@ Traditional escrow just delays this dispute — a human still has to decide who'
 
 ```
 Owner: create_project(title, inspections, contractor_address)
-Owner: deposit_escrow(amount = contract_value)
+Owner: deposit_escrow()  ← sends GEN as tx value (payable)
 Contractor: accept_project()
 
 Both: submit_evidence(certificates, permits, photos, reports)
@@ -94,14 +94,21 @@ gl.eq_principle.prompt_comparative(
 
 **Appeals**: Either party may appeal a REJECTED decision up to `MAX_APPEALS = 3` times. Each round: `submit_appeal()` → `reopen_for_evidence()` → add evidence → `request_inspection()` → `evaluate_completion()`.
 
-**Auto-settlement**: On APPROVED, escrow state is marked released immediately inside `evaluate_completion`. On final REJECTED (MAX_APPEALS exhausted), escrow returns to owner. No manual release/refund button needed.
+**Payable custody**: `deposit_escrow` is decorated `@gl.public.write.payable` — GEN is taken into contract custody via `gl.message.value`. The sent amount must match `contract_value` exactly; any mismatch is rejected.
+
+**Real fund transfer**: All settlement paths route through a single `_send_gen()` helper backed by `@gl.evm.contract_interface`. The ledger field is zeroed and state is saved *before* the transfer fires — no reentrancy window, no double-spend:
+- APPROVED → `_send_gen(contractor, escrow_amount)`
+- Final REJECTED → `_send_gen(owner, escrow_amount)`
+- CANCELLED → `_send_gen(owner, refund)`
+
+**Fail-closed evidence**: If more than half the required inspection items have only UNVERIFIED evidence (URL inaccessible AND permit number not confirmed by web search), `passed=false`. Evidence is not given the benefit of the doubt — it must be independently verifiable.
 
 ### Contract ABI
 
 | Method | Caller | Description |
 |--------|--------|-------------|
 | `create_project(title, description, location, contract_value, inspection_names, contractor_address)` | Owner | Creates project and pre-assigns a specific contractor |
-| `deposit_escrow(project_id, amount)` | Owner | Locks GEN escrow — must equal `contract_value` exactly |
+| `deposit_escrow(project_id)` | Owner | Locks GEN escrow — GEN sent as tx value (`gl.message.value`), must equal `contract_value` |
 | `accept_project(project_id)` | Assigned contractor only | Accepts project; promotes to ESCROWED if funded |
 | `submit_evidence(project_id, type, title, url, description, is_dispute)` | Owner or Contractor | Stores evidence fully on-chain |
 | `request_inspection(project_id)` | Either party | Locks evidence, moves to UNDER_REVIEW |
