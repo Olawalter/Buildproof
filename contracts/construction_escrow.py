@@ -4,6 +4,26 @@ import json
 from dataclasses import dataclass
 from genlayer import *
 
+# ─── EVM Transfer Interface ───────────────────────────────────────────────────
+# Single emission point — all GEN payouts route through _send_gen.
+
+
+@gl.evm.contract_interface
+class _Recipient:
+    class View:
+        pass
+
+    class Write:
+        pass
+
+
+def _send_gen(to_address: str, amount: u256) -> None:
+    if not to_address:
+        raise gl.vm.UserError("Missing recipient address")
+    if amount <= u256(0):
+        raise gl.vm.UserError("Transfer amount must be positive")
+    _Recipient(Address(to_address)).emit_transfer(value=amount)
+
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 STATUS_DRAFT               = "draft"
@@ -179,14 +199,12 @@ class ConstructionEscrow(gl.Contract):
 
     # ── Owner: Deposit Escrow ──────────────────────────────────────────────────
 
-    @gl.public.write
-    def deposit_escrow(self, project_id: str, amount: u256) -> None:
+    @gl.public.write.payable
+    def deposit_escrow(self, project_id: str) -> None:
         """
-        Owner locks escrow funds. amount must equal the agreed contract_value.
-        Can be called on a DRAFT or ACCEPTED project (before evidence is submitted).
-
-        Note: gl.message.value is not functional on StudioNet — amount is used
-        as an explicit parameter and validated against contract_value on-chain.
+        Owner locks GEN into escrow by sending it with this transaction.
+        gl.message.value is the authoritative amount — no caller-supplied figure is trusted.
+        The sent amount must equal the agreed contract_value exactly.
         """
         assert project_id in self.projects, "[EXPECTED] Project not found"
         project = self.projects[project_id]
@@ -196,14 +214,15 @@ class ConstructionEscrow(gl.Contract):
         assert project.status in (STATUS_DRAFT, STATUS_ACCEPTED), \
             "[EXPECTED] Can only deposit escrow before evidence is submitted"
         assert not project.payment_released, "[EXPECTED] Payment already processed"
-        assert amount > u256(0), "[EXPECTED] Escrow amount must be positive"
+        assert int(project.escrow_deposited) == 0, "[EXPECTED] Escrow already deposited"
+
+        amount = gl.message.value
+        assert amount > u256(0), "[EXPECTED] Must send GEN with this transaction"
         assert amount == project.contract_value, \
-            "[EXPECTED] Escrow deposit must equal the contract value"
+            "[EXPECTED] Sent amount must equal the contract value exactly"
 
         project.escrow_deposited = amount
-        if project.status == STATUS_DRAFT:
-            project.status = STATUS_DRAFT   # stays DRAFT until contractor accepts
-        # Status is promoted to ESCROWED only when the contractor has also accepted
+        # Status stays DRAFT until contractor accepts; promoted to ESCROWED in accept_project
 
     # ── Contractor: Accept Project ─────────────────────────────────────────────
 
@@ -465,10 +484,13 @@ class ConstructionEscrow(gl.Contract):
                 f"EXTERNAL VERIFICATION (URL checks + permit number web searches):\n{verification_text}\n\n"
                 "RULES:\n"
                 "- passed=true only if every required inspection has a matching certificate/permit/report.\n"
-                "- If EXTERNAL VERIFICATION shows a permit is INACCESSIBLE or not found in web searches, "
-                "lower confidence_pct but do not automatically fail — consider whether the description "
-                "is detailed and internally consistent.\n"
-                "- If a permit number is confirmed by web search, increase confidence_pct.\n"
+                "- If EXTERNAL VERIFICATION shows a URL is INACCESSIBLE AND the permit/reference number "
+                "is not found in any web search, treat that evidence item as UNVERIFIED. "
+                "If more than half the required inspection items have only UNVERIFIED evidence, set passed=false.\n"
+                "- If a permit number is confirmed by web search or the URL is accessible, count that "
+                "inspection as satisfied and increase confidence_pct.\n"
+                "- Do not give credit for evidence that is internally inconsistent or where "
+                "the description contradicts the title.\n"
                 "- critical_defects counts structural, electrical, plumbing, or fire-safety failures ONLY.\n"
                 "- passed=false if critical_defects > 0.\n"
                 "- occupancy_verified=true only if a government-issued occupancy or rough-in approval is present.\n"
@@ -543,19 +565,27 @@ class ConstructionEscrow(gl.Contract):
         project.has_decision = True
 
         if passed:
-            # APPROVED — mark escrow released; on mainnet gl.transfer moves GEN
+            # APPROVED — zero ledger first, then transfer to contractor (prevents double-spend)
+            contractor_addr = project.contractor
             amount = project.escrow_deposited
             project.escrow_deposited = u256(0)
             project.payment_released = True
             project.status = STATUS_FINALIZED
+            self.projects[project_id] = project
+            if amount > u256(0):
+                _send_gen(contractor_addr, amount)
         else:
-            # REJECTED — if no more appeals remain, auto-return to owner
+            # REJECTED — if no more appeals remain, refund owner
             project.status = STATUS_REJECTED
             if int(project.appeal_count) >= MAX_APPEALS:
+                owner_addr = project.owner
                 amount = project.escrow_deposited
                 project.escrow_deposited = u256(0)
                 project.payment_released = True
                 project.status = STATUS_FINALIZED
+                self.projects[project_id] = project
+                if amount > u256(0):
+                    _send_gen(owner_addr, amount)
 
     # ── Submit Appeal (either party) ───────────────────────────────────────────
 
@@ -645,10 +675,15 @@ class ConstructionEscrow(gl.Contract):
             "[EXPECTED] Project can only be cancelled before evidence is submitted"
         assert not project.payment_released, "[EXPECTED] Payment already processed"
 
+        owner_addr = project.owner
+        refund = project.escrow_deposited
         project.escrow_deposited = u256(0)
         project.payment_released = True
         project.status = STATUS_CANCELLED
-        # on mainnet gl.transfer(owner_addr, refund) moves GEN back to owner
+        # Zero ledger and save before transfer — prevents any double-refund window
+        self.projects[project_id] = project
+        if refund > u256(0):
+            _send_gen(owner_addr, refund)
 
     # ── View Methods ───────────────────────────────────────────────────────────
 

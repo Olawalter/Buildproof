@@ -228,7 +228,8 @@ export async function txDepositEscrow(
   const addr = getContractAddress();
   if (!addr) throw new Error("[EXPECTED] Contract address not configured.");
   const client = getWriteClient(walletAddress);
-  const request = { address: addr, functionName: "deposit_escrow", args: [projectId, amount], value: 0n };
+  // amount is sent as the transaction value (gl.message.value), not as a parameter
+  const request = { address: addr, functionName: "deposit_escrow", args: [projectId], value: amount };
   const feeEst = await estimateFees(client, request);
   const hash = await client.writeContract({
     ...request,
