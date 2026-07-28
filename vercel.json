@@ -2,5 +2,13 @@
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/.next",
   "installCommand": "cd frontend && npm install",
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "env": {
+    "NEXT_PUBLIC_CONTRACT_ADDRESS": "0x1282D8C76bAEc9F347a8E9e1E5dcc8eF411E412C",
+    "NEXT_PUBLIC_GENLAYER_RPC_URL": "https://studio.genlayer.com/api",
+    "NEXT_PUBLIC_GENLAYER_CHAIN_ID": "61999",
+    "NEXT_PUBLIC_GENLAYER_CHAIN_NAME": "GenLayer Studio",
+    "NEXT_PUBLIC_GENLAYER_SYMBOL": "GEN",
+    "NEXT_PUBLIC_NETWORK": "studionet"
+  }
 }
