@@ -1,7 +1,7 @@
 # BuildProof — Deployment Guide
 
 **Live demo:** https://buildproof-topaz.vercel.app
-**Contract:** `0xCb593F2e171f815601F2779f502757B094A148be` (StudioNet)
+**Contract:** `0x1282D8C76bAEc9F347a8E9e1E5dcc8eF411E412C` (StudioNet)
 
 ---
 
