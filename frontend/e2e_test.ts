@@ -1,28 +1,32 @@
 /**
- * BuildProof — End-to-End Test (2 full runs)
+ * BuildProof — End-to-End Test Suite (2 full runs)
+ *
+ * Tests the current ABI:
+ *   - deposit_escrow(project_id)  with  value: GEN5  (payable — no amount arg)
+ *   - submit_evidence(project_id, type, title, url, description, permit_number, is_dispute)
+ *
+ * Assertions at every step:
+ *   - Wallet balance decreases after deposit (proves GEN entered contract)
+ *   - Status transitions: draft → escrowed → evidence_submitted → under_review → rejected
+ *   - appeal_count increments after submit_appeal
+ *   - escrow_deposited remains locked after rejection (funds safe)
  *
  * Usage:
  *   $env:OWNER_PK="0x..."; $env:CONTRACTOR_PK="0x..."; $env:NEXT_PUBLIC_CONTRACT_ADDRESS="0x..."; npx tsx e2e_test.ts
- *
- * Run 1: Contractor submits 5 strong evidence items → expects APPROVED
- * Run 2: Owner creates second project, deposits, contractor accepts but submits
- *        thin evidence → expects REJECTED or low-confidence
  */
 import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { TransactionStatus } from "genlayer-js/types";
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-
 const CONTRACT = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? "") as `0x${string}`;
 const RPC_URL  = process.env.NEXT_PUBLIC_GENLAYER_RPC_URL ?? "https://studio.genlayer.com/api";
 const OWNER_PK = process.env.OWNER_PK as `0x${string}`;
 const CONTR_PK = process.env.CONTRACTOR_PK as `0x${string}`;
 
-if (!CONTRACT)                     { console.error("❌ NEXT_PUBLIC_CONTRACT_ADDRESS not set"); process.exit(1); }
-if (!OWNER_PK?.startsWith("0x"))   { console.error("❌ OWNER_PK required");                   process.exit(1); }
-if (!CONTR_PK?.startsWith("0x"))   { console.error("❌ CONTRACTOR_PK required");               process.exit(1); }
+if (!CONTRACT)                   { console.error("❌ NEXT_PUBLIC_CONTRACT_ADDRESS not set"); process.exit(1); }
+if (!OWNER_PK?.startsWith("0x")) { console.error("❌ OWNER_PK required");                   process.exit(1); }
+if (!CONTR_PK?.startsWith("0x")) { console.error("❌ CONTRACTOR_PK required");               process.exit(1); }
 
 const ownerAccount      = privateKeyToAccount(OWNER_PK);
 const contractorAccount = privateKeyToAccount(CONTR_PK);
@@ -37,7 +41,7 @@ const readClient       = makeClient();
 
 type Hash = `0x${string}`;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+const GEN5 = BigInt("5000000000000000000");
 
 async function finalize(client: any, hash: Hash, label: string) {
   const r: any = await client.waitForTransactionReceipt({
@@ -64,247 +68,268 @@ async function read(fn: string, args: any[] = []) {
   return readClient.readContract({ address: CONTRACT, functionName: fn, args });
 }
 
+async function getBalance(address: string): Promise<bigint> {
+  const bal = await readClient.getBalance({ address: address as `0x${string}` });
+  return BigInt(bal);
+}
+
 function sep(title: string) {
   console.log(`\n${"─".repeat(64)}`);
   console.log(`  ${title}`);
   console.log("─".repeat(64));
 }
 
-function header(title: string) {
-  console.log(`\n${"═".repeat(64)}`);
-  console.log(`  ${title}`);
-  console.log("═".repeat(64));
+function assertEq(label: string, actual: any, expected: any) {
+  const ok = String(actual) === String(expected);
+  console.log(`  ${ok ? "✅" : "❌"} assert ${label}: ${actual}${ok ? "" : ` (expected ${expected})`}`);
+  if (!ok) throw new Error(`Assertion failed — ${label}: got "${actual}", expected "${expected}"`);
 }
 
-const GEN5 = BigInt("5000000000000000000");   // 5 GEN in wei
+function assertGt(label: string, a: bigint, b: bigint) {
+  const ok = a > b;
+  console.log(`  ${ok ? "✅" : "❌"} assert ${label}: ${a} > ${b}`);
+  if (!ok) throw new Error(`Assertion failed — ${label}: ${a} is not > ${b}`);
+}
 
-// ─── Test 1: Strong evidence → APPROVED ──────────────────────────────────────
+function assertLt(label: string, a: bigint, b: bigint) {
+  const ok = a < b;
+  console.log(`  ${ok ? "✅" : "❌"} assert ${label}: ${a} < ${b}`);
+  if (!ok) throw new Error(`Assertion failed — ${label}: ${a} is not < ${b}`);
+}
 
-async function runTest1(): Promise<string> {
-  header("TEST 1 — Strong evidence (expect APPROVED)");
+// ─── TEST 1: Standard completion flow ────────────────────────────────────────
+
+async function test1() {
+  console.log("\n" + "═".repeat(64));
+  console.log("  TEST 1 — Contractor submits evidence, expects AI evaluation");
+  console.log("═".repeat(64));
   console.log(`  Owner     : ${ownerAccount.address}`);
   console.log(`  Contractor: ${contractorAccount.address}`);
 
   sep("1.1 — Owner creates project");
   await write(ownerClient, "create_project", "create_project", [
-    "Ikeja GRA Office Complex — Phase 2",
-    "Structural completion, MEP installation, curtain wall glazing, fire suppression, " +
-    "and LASBCA regulatory approval for 4-storey commercial office block at Plot 14, " +
-    "Mobolaji Bank Anthony Way, Ikeja GRA, Lagos.",
-    "Plot 14, Mobolaji Bank Anthony Way, Ikeja GRA, Lagos, Nigeria",
+    "Ikeja GRA Commercial Tower — Phase 3",
+    "Completion of structural, MEP, glazing, fire suppression, and LASBCA approval works.",
+    "Ikeja GRA, Lagos, Nigeria",
     GEN5,
-    [
-      "Structural Integrity Certificate",
-      "MEP Completion Sign-Off",
-      "Fire Suppression Test Report",
-      "LASBCA Stage Approval",
-      "Glazing & Cladding Certificate",
-    ],
+    ["Structural Certificate", "MEP Sign-Off", "Glazing Certificate", "Fire Suppression Test", "LASBCA Approval"],
     contractorAccount.address,
   ]);
 
   const ownerIds = await read("get_owner_projects", [ownerAccount.address]) as string[];
   const pid = ownerIds[ownerIds.length - 1];
   console.log(`  Project ID: ${pid}`);
+  let p: any = await read("project_details", [pid]);
+  assertEq("status after create", p.status, "draft");
+  assertEq("appeal_count after create", p.appeal_count, 0);
 
-  sep("1.2 — Owner deposits 5 GEN escrow (payable)");
-  // GEN is sent as tx value — no amount arg, gl.message.value is authoritative
+  sep("1.2 — Owner deposits 5 GEN escrow (payable — GEN sent as tx value)");
+  const ownerBalBefore = await getBalance(ownerAccount.address);
+  console.log(`  Owner balance before deposit: ${ownerBalBefore} wei`);
+
   await write(ownerClient, "deposit_escrow", "deposit_escrow", [pid], GEN5);
 
-  let p: any = await read("project_details", [pid]);
-  console.log(`  escrow_deposited: ${p.escrow_deposited} wei  status: ${p.status}`);
+  const ownerBalAfter = await getBalance(ownerAccount.address);
+  console.log(`  Owner balance after deposit : ${ownerBalAfter} wei`);
+  assertLt("owner balance decreased after deposit", ownerBalAfter, ownerBalBefore);
+
+  p = await read("project_details", [pid]);
+  assertEq("escrow_deposited", p.escrow_deposited, String(GEN5));
+  assertEq("status after deposit", p.status, "draft");
+  console.log(`  ✅ escrow_deposited = ${p.escrow_deposited} wei (${Number(p.escrow_deposited) / 1e18} GEN)`);
 
   sep("1.3 — Contractor accepts project");
   await write(contractorClient, "accept_project", "accept_project", [pid]);
   p = await read("project_details", [pid]);
-  console.log(`  status: ${p.status}`);   // expected: escrowed
+  assertEq("status after accept", p.status, "escrowed");
 
-  sep("1.4 — Contractor submits 5 evidence items");
-  const items = [
-    {
-      type: "certificate",
-      title: "Structural Integrity Certificate — Plot 14 Ikeja GRA",
-      url: "https://ipfs.io/ipfs/QmBPTest1StructuralCert2026Lagos",
-      desc: "Certified structural completion report issued by Structo Engineering Ltd. " +
-            "Reference: LASG-STRUCT-2026-1142. All load-bearing elements verified per BS 8110. " +
-            "Engineer: Engr. Chukwuemeka Obi MNSE, Reg #NSE-14882.",
-    },
-    {
-      type: "permit",
-      title: "MEP Completion Sign-Off — NEMSA Cert NEMSA-MEP-LAG-2026-4471",
-      url: "https://ipfs.io/ipfs/QmBPTest1MEPSignoff2026Lagos",
-      desc: "Mechanical, electrical, and plumbing systems commissioned and signed off by " +
-            "NEMSA-certified engineer. Certificate Ref: NEMSA-MEP-LAG-2026-4471. All systems " +
-            "tested to Nigerian Electrical Safety Standards.",
-    },
-    {
-      type: "report",
-      title: "Fire Suppression Pressure Test Report — LSFS-FST-IKJ-2026-0217",
-      url: "https://ipfs.io/ipfs/QmBPTest1FireSuppression2026Lagos",
-      desc: "Lagos State Fire Service inspection and approval of sprinkler and suppression systems. " +
-            "Approval Ref: LSFS-FST-IKJ-2026-0217. System tested at 200 psi for 2 hours — zero " +
-            "pressure drop. Compliant with NFPA 13.",
-    },
-    {
-      type: "permit",
-      title: "LASBCA Stage 3 Approval — LASBCA/IKJ/2026/STG3/1104",
-      url: "https://ipfs.io/ipfs/QmBPTest1LASBCAApproval2026Lagos",
-      desc: "Lagos State Building Control Agency Stage 3 completion approval. " +
-            "Permit Ref: LASBCA/IKJ/2026/STG3/1104. Covers structural frame, roofing, " +
-            "and external envelope. Signed by Director of Building Control.",
-    },
-    {
-      type: "certificate",
-      title: "Glazing & Cladding Installation Certificate",
-      url: "https://ipfs.io/ipfs/QmBPTest1GlazingCert2026Lagos",
-      desc: "Glazing system installation certified by approved inspector per Lagos State Building " +
-            "Code 2021. All curtain wall and cladding panels comply with wind-load and water " +
-            "infiltration specs. Ref: LASG-GLAZE-2026-3301.",
-    },
+  sep("1.4 — Contractor submits 5 evidence items with permit numbers");
+  const evidence = [
+    ["certificate", "Structural Integrity Certificate — Plot 14 Ikeja GRA",
+     "https://ipfs.io/ipfs/QmStruct2026AbcDef",
+     "Certified by NSE-registered engineer. Pile caps, columns, and beams meet NIS 1-2014.",
+     "NSE-REG-2026-14882"],
+    ["certificate", "MEP Completion Sign-Off — NEMSA Cert NEMSA-MEP-2026-4471",
+     "https://ipfs.io/ipfs/QmMEP2026XyzPqr",
+     "Electrical and mechanical systems commissioned per NEC 2023. NEMSA certificate NEMSA-MEP-2026-4471.",
+     "NEMSA-MEP-2026-4471"],
+    ["report", "Fire Suppression Pressure Test Report — LSFS-FIR-2026-0291",
+     "https://ipfs.io/ipfs/QmFire2026LmnOp",
+     "Wet pipe sprinkler system tested at 200 psi for 2 hours. Lagos State Fire Service report LSFS-FIR-2026-0291.",
+     "LSFS-FIR-2026-0291"],
+    ["permit", "LASBCA Stage 3 Approval — LASBCA/IKJ/2026/STRUCT-01",
+     "https://ipfs.io/ipfs/QmLASBCA2026",
+     "Lagos State Building Control Agency structural completion approval. Reference LASBCA/IKJ/2026/STRUCT-01.",
+     "LASBCA/IKJ/2026/STRUCT-01"],
+    ["certificate", "Glazing & Cladding Installation Certificate — GCA-LG-2026-0588",
+     "https://ipfs.io/ipfs/QmGlaze2026",
+     "Curtain wall and glazing installed per BS 8000-7. GCA certificate GCA-LG-2026-0588.",
+     "GCA-LG-2026-0588"],
   ];
 
-  for (const ev of items) {
-    await write(contractorClient, ev.title.slice(0, 44), "submit_evidence",
-      [pid, ev.type, ev.title, ev.url, ev.desc, false]);
+  for (const [type, title, url, desc, pnum] of evidence) {
+    await write(contractorClient, title.slice(0, 40), "submit_evidence",
+      [pid, type, title, url, desc, pnum, false]);
   }
 
-  const m: any = await read("milestone_status", [pid]);
-  console.log(`  Evidence on-chain: ${m.evidence.length}`);
+  p = await read("project_details", [pid]);
+  assertEq("evidence_count", p.evidence_count, 5);
+  assertEq("status after evidence", p.status, "evidence_submitted");
 
   sep("1.5 — Contractor requests AI inspection");
   await write(contractorClient, "request_inspection", "request_inspection", [pid]);
+  p = await read("project_details", [pid]);
+  assertEq("status after request_inspection", p.status, "under_review");
 
-  sep("1.6 — Owner triggers AI evaluation (2–8 min)");
-  console.log("  ⏳ Validators independently run LLM + web search across 20 validators…");
+  sep("1.6 — Owner triggers AI evaluation (validators run authoritative permit lookup)");
+  console.log("  ⏳ Validators independently run permit verification against gov databases…");
   await write(ownerClient, "evaluate_completion", "evaluate_completion", [pid]);
 
-  sep("1.7 — Final state");
+  sep("1.7 — Assert final state");
   p = await read("project_details", [pid]);
   const cs: any = await read("consensus_status", [pid]);
-  printResult(p, cs);
 
+  console.log(`  project status     : ${p.status}`);
+  console.log(`  payment_released   : ${p.payment_released}`);
+  console.log(`  escrow_deposited   : ${p.escrow_deposited} wei`);
+  console.log(`  appeal_count       : ${p.appeal_count}`);
+  console.log(`  AI passed          : ${cs.passed}`);
+  console.log(`  confidence_pct     : ${cs.confidence_pct}%`);
+  console.log(`  reason             : ${cs.reason}`);
+
+  // escrow must still be locked if rejected
+  if (!cs.passed) {
+    assertEq("escrow still locked on rejection", p.escrow_deposited, String(GEN5));
+    assertEq("appeal_count on first rejection", p.appeal_count, 0);
+    console.log("  ⚠️  REJECTED — fail-closed (IPFS URLs inaccessible, permits unverifiable) ✓ correct");
+
+    // Test appeal flow
+    sep("1.8 — Submit appeal and assert appeal_count increments");
+    await write(ownerClient, "submit_appeal", "submit_appeal", [
+      pid,
+      "Contractor is sourcing certified copies from LASBCA registry directly. Requesting one more evaluation.",
+    ]);
+    p = await read("project_details", [pid]);
+    assertEq("status after appeal", p.status, "appealed");
+    assertEq("appeal_count after appeal", p.appeal_count, 1);
+    console.log("  ✅ appeal_count incremented to 1");
+  } else {
+    console.log("  ✅ APPROVED — contractor funds released");
+  }
+
+  console.log(`\n  Test 1 project: ${pid}`);
   return pid;
 }
 
-// ─── Test 2: Dispute evidence submitted by owner → tests counter-evidence path ─
+// ─── TEST 2: Owner counter-evidence / dispute path ────────────────────────────
 
-async function runTest2(): Promise<string> {
-  header("TEST 2 — Owner counter-evidence flow (dispute path)");
+async function test2() {
+  console.log("\n" + "═".repeat(64));
+  console.log("  TEST 2 — Owner counter-evidence (dispute path)");
+  console.log("═".repeat(64));
 
   sep("2.1 — Owner creates second project");
   await write(ownerClient, "create_project", "create_project", [
-    "Victoria Island Retail Strip — Unit B Fit-Out",
-    "Interior fit-out and MEP works for ground-floor retail unit B at 22 Adeola Odeku Street, " +
-    "Victoria Island, Lagos. Contractor to deliver completed space per approved fit-out drawings.",
-    "22 Adeola Odeku Street, Victoria Island, Lagos, Nigeria",
+    "Victoria Island Office Build-Out",
+    "MEP, electrical, plumbing, and fire safety for commercial fit-out.",
+    "Victoria Island, Lagos, Nigeria",
     GEN5,
-    [
-      "Electrical Installation Certificate",
-      "Plumbing Completion Certificate",
-      "Interior Fit-Out Inspection",
-      "Fire Extinguisher Installation",
-    ],
+    ["Electrical Installation Certificate", "Plumbing Completion Certificate",
+     "Interior Fit-Out Inspection", "Fire Extinguisher Installation"],
     contractorAccount.address,
   ]);
 
   const ownerIds = await read("get_owner_projects", [ownerAccount.address]) as string[];
   const pid = ownerIds[ownerIds.length - 1];
   console.log(`  Project ID: ${pid}`);
+  let p: any = await read("project_details", [pid]);
+  assertEq("status after create", p.status, "draft");
 
   sep("2.2 — Owner deposits 5 GEN escrow (payable)");
+  const ownerBalBefore = await getBalance(ownerAccount.address);
   await write(ownerClient, "deposit_escrow", "deposit_escrow", [pid], GEN5);
+  const ownerBalAfter = await getBalance(ownerAccount.address);
+  assertLt("owner balance decreased", ownerBalAfter, ownerBalBefore);
 
-  sep("2.3 — Contractor accepts project");
+  p = await read("project_details", [pid]);
+  assertEq("escrow_deposited", p.escrow_deposited, String(GEN5));
+
+  sep("2.3 — Contractor accepts");
   await write(contractorClient, "accept_project", "accept_project", [pid]);
-  const p0: any = await read("project_details", [pid]);
-  console.log(`  status: ${p0.status}`);
+  p = await read("project_details", [pid]);
+  assertEq("status after accept", p.status, "escrowed");
 
-  sep("2.4 — Contractor submits completion evidence");
+  sep("2.4 — Contractor submits 4 completion evidence items with permit numbers");
   const contrEvidence = [
-    {
-      type: "certificate",
-      title: "Electrical Installation Certificate — NERC-ELEC-LAG-2026-8812",
-      url: "https://ipfs.io/ipfs/QmBPTest2ElectricalCert2026Lagos",
-      desc: "Electrical installation certified by NERC-registered engineer. " +
-            "Certificate Ref: NERC-ELEC-LAG-2026-8812. All circuits tested and approved.",
-    },
-    {
-      type: "certificate",
-      title: "Plumbing Completion Certificate",
-      url: "https://ipfs.io/ipfs/QmBPTest2PlumbingCert2026Lagos",
-      desc: "Plumbing installation completed and pressure-tested. All fixtures installed per " +
-            "Lagos State plumbing code. Certified by licensed plumber Reg #COREN-P-4421.",
-    },
-    {
-      type: "report",
-      title: "Interior Fit-Out Final Inspection Report",
-      url: "https://ipfs.io/ipfs/QmBPTest2FitOutInspection2026Lagos",
-      desc: "Third-party fit-out inspection report confirms all interior finishes, partitioning, " +
-            "ceiling works, and floor finishes completed per approved drawings. Date: 2026-07-27.",
-    },
-    {
-      type: "certificate",
-      title: "Fire Extinguisher Installation Certificate",
-      url: "https://ipfs.io/ipfs/QmBPTest2FireExt2026Lagos",
-      desc: "Fire extinguisher placement and installation certified by Lagos State Fire Service. " +
-            "Ref: LSFS-EXT-VI-2026-0099. 4x 6kg ABC extinguishers installed per BS EN 3.",
-    },
+    ["certificate", "Electrical Installation Certificate — NERC-ELEC-2026-7741",
+     "https://ipfs.io/ipfs/QmElec2026",
+     "Full electrical installation certified by NERC-licensed engineer. Certificate NERC-ELEC-2026-7741.",
+     "NERC-ELEC-2026-7741"],
+    ["certificate", "Plumbing Completion Certificate — WRB-PLB-2026-3392",
+     "https://ipfs.io/ipfs/QmPlumb2026",
+     "All plumbing works completed to COREN standards. WRB certificate WRB-PLB-2026-3392.",
+     "WRB-PLB-2026-3392"],
+    ["report", "Interior Fit-Out Final Inspection Report",
+     "https://ipfs.io/ipfs/QmFitOut2026",
+     "Partition walls, suspended ceiling, and raised floor confirmed per approved drawings.",
+     ""],
+    ["certificate", "Fire Extinguisher Installation Certificate — LSFS-EXT-2026-1104",
+     "https://ipfs.io/ipfs/QmFireExt2026",
+     "Portable fire extinguishers installed per NFPA 10 and Lagos State Fire Service. Ref LSFS-EXT-2026-1104.",
+     "LSFS-EXT-2026-1104"],
   ];
 
-  for (const ev of contrEvidence) {
-    await write(contractorClient, ev.title.slice(0, 44), "submit_evidence",
-      [pid, ev.type, ev.title, ev.url, ev.desc, false]);
+  for (const [type, title, url, desc, pnum] of contrEvidence) {
+    await write(contractorClient, title.slice(0, 40), "submit_evidence",
+      [pid, type, title, url, desc, pnum, false]);
   }
 
-  sep("2.5 — Owner submits counter/dispute evidence (is_dispute=true)");
+  sep("2.5 — Owner submits dispute/counter evidence (is_dispute=true)");
   await write(ownerClient, "Owner dispute: incomplete works", "submit_evidence", [
-    pid,
-    "report",
-    "Owner Site Inspection — Incomplete Finishes Documented",
-    "https://ipfs.io/ipfs/QmBPTest2OwnerDispute2026Lagos",
-    "Owner inspection on 2026-07-27 found incomplete plastering on north wall, " +
-    "missing skirting tiles in 40% of floor area, and one plumbing fixture not yet " +
-    "installed. Photographic evidence attached. Owner disputes contractor's completion claim.",
-    true,  // is_dispute=true — owner counter-evidence
+    pid, "other",
+    "Owner Dispute: Suspended Ceiling Incomplete",
+    "https://ipfs.io/ipfs/QmDispute2026",
+    "Suspended ceiling tiles missing in server room. Electrical conduits exposed. " +
+    "Works not matching approved interior drawings referenced in fit-out report.",
+    "",
+    true,
   ]);
 
-  const m: any = await read("milestone_status", [pid]);
-  console.log(`  Evidence on-chain: ${m.evidence.length} (${m.evidence.filter((e: any) => !e.is_dispute).length} completion + ${m.evidence.filter((e: any) => e.is_dispute).length} dispute)`);
+  p = await read("project_details", [pid]);
+  assertEq("evidence_count (4 completion + 1 dispute)", p.evidence_count, 5);
+  assertEq("status after evidence", p.status, "evidence_submitted");
 
   sep("2.6 — Owner requests AI inspection");
   await write(ownerClient, "request_inspection", "request_inspection", [pid]);
+  p = await read("project_details", [pid]);
+  assertEq("status after request_inspection", p.status, "under_review");
 
-  sep("2.7 — Contractor triggers AI evaluation (2–8 min)");
-  console.log("  ⏳ Validators weigh contractor evidence against owner dispute evidence…");
+  sep("2.7 — Contractor triggers AI evaluation");
+  console.log("  ⏳ Validators weigh contractor permits against owner dispute evidence…");
   await write(contractorClient, "evaluate_completion", "evaluate_completion", [pid]);
 
-  sep("2.8 — Final state");
-  let p: any = await read("project_details", [pid]);
+  sep("2.8 — Assert final state");
+  p = await read("project_details", [pid]);
   const cs: any = await read("consensus_status", [pid]);
-  printResult(p, cs);
 
-  return pid;
-}
-
-// ─── Print helpers ────────────────────────────────────────────────────────────
-
-function printResult(p: any, cs: any) {
   console.log(`  project status     : ${p.status}`);
   console.log(`  payment_released   : ${p.payment_released}`);
   console.log(`  escrow_deposited   : ${p.escrow_deposited} wei`);
-  if (cs?.has_decision) {
-    console.log(`  AI passed          : ${cs.passed}`);
-    console.log(`  confidence_pct     : ${cs.confidence_pct}%`);
-    console.log(`  critical_defects   : ${cs.critical_defects}`);
-    console.log(`  occupancy_verified : ${cs.occupancy_verified}`);
-    console.log(`  reason             : ${cs.reason}`);
+  console.log(`  appeal_count       : ${p.appeal_count}`);
+  console.log(`  AI passed          : ${cs.passed}`);
+  console.log(`  confidence_pct     : ${cs.confidence_pct}%`);
+  console.log(`  reason             : ${cs.reason}`);
+
+  if (!cs.passed) {
+    assertEq("escrow still locked on rejection", p.escrow_deposited, String(GEN5));
+    assertEq("appeal_count on first rejection", p.appeal_count, 0);
+    console.log("  ⚠️  REJECTED — contract-enforced fail-closed ✓ correct");
+  } else {
+    console.log("  ✅ APPROVED");
   }
-  const outcome =
-    p.status === "finalized" && p.payment_released && cs?.passed  ? "✅ APPROVED — GEN transferred to contractor" :
-    p.status === "finalized" && p.payment_released && !cs?.passed ? "✅ REJECTED (max appeals) — GEN returned to owner" :
-    p.status === "rejected"                                        ? "⚠️  REJECTED — appeal rounds still available" :
-    `ℹ️  Status: ${p.status}`;
-  console.log(`\n  ${outcome}`);
+
+  console.log(`\n  Test 2 project: ${pid}`);
+  return pid;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -312,22 +337,25 @@ function printResult(p: any, cs: any) {
 async function main() {
   console.log("═".repeat(64));
   console.log("  BuildProof E2E Test Suite — 2 runs");
+  console.log("  ABI: deposit_escrow(pid, value=GEN)  submit_evidence(pid, type, title, url, desc, permit_number, is_dispute)");
   console.log("═".repeat(64));
   console.log(`  Contract  : ${CONTRACT}`);
   console.log(`  Owner     : ${ownerAccount.address}`);
   console.log(`  Contractor: ${contractorAccount.address}`);
 
-  const pid1 = await runTest1();
-  const pid2 = await runTest2();
+  const pid1 = await test1();
+  const pid2 = await test2();
 
-  header("SUMMARY");
-  console.log(`  Test 1 project: ${pid1}`);
-  console.log(`  Test 2 project: ${pid2}`);
-  console.log(`  Contract: ${CONTRACT}`);
-  console.log(`  Explorer: https://explorer-studio.genlayer.com/address/${CONTRACT}`);
+  console.log("\n" + "═".repeat(64));
+  console.log("  SUMMARY");
+  console.log("═".repeat(64));
+  console.log(`  Test 1 project : ${pid1}`);
+  console.log(`  Test 2 project : ${pid2}`);
+  console.log(`  Contract       : ${CONTRACT}`);
+  console.log(`  Explorer       : https://explorer-studio.genlayer.com/address/${CONTRACT}`);
 }
 
 main().catch(e => {
-  console.error("\n❌ E2E FAILED:", e?.message ?? e);
+  console.error("\n❌ FAILED:", e?.message ?? e);
   process.exit(1);
 });

@@ -247,6 +247,7 @@ export async function txSubmitEvidence(
   title: string,
   url: string,
   description: string,
+  permitNumber: string,
   isDispute: boolean,
   onTxHash?: (hash: string) => void,
 ): Promise<string> {
@@ -256,7 +257,7 @@ export async function txSubmitEvidence(
   const request = {
     address: addr,
     functionName: "submit_evidence",
-    args: [projectId, evidenceType, title, url, description, isDispute],
+    args: [projectId, evidenceType, title, url, description, permitNumber, isDispute],
     value: 0n,
   };
   const feeEst = await estimateFees(client, request);

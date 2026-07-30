@@ -35,6 +35,7 @@ export default function EvidencePage({ params }: { params: Promise<{ id: string 
   const [title, setTitle] = useState("");
   const [url, setUrl] = useState("");
   const [description, setDescription] = useState("");
+  const [permitNumber, setPermitNumber] = useState("");
 
   const isOwner = address?.toLowerCase() === project?.owner.toLowerCase();
   const isContractor =
@@ -66,6 +67,7 @@ export default function EvidencePage({ params }: { params: Promise<{ id: string 
             title,
             url,
             description,
+            permitNumber,
             isDispute,
             onHash,
           ),
@@ -163,6 +165,22 @@ export default function EvidencePage({ params }: { params: Promise<{ id: string 
                 Link to the uploaded document, image, or certificate (IPFS, Google Drive, etc.)
               </p>
             </div>
+            {!isDispute && (
+              <div>
+                <label className="block text-sm text-white/60 mb-1.5">
+                  Permit / Certificate Number *
+                </label>
+                <Input
+                  value={permitNumber}
+                  onChange={(e) => setPermitNumber(e.target.value)}
+                  placeholder="e.g. LASBCA/VI/2026/0847 or NESREA-REG-2026-4471"
+                />
+                <p className="text-xs text-white/25 mt-1">
+                  Official reference ID used to verify this document in government registries.
+                  Required for AI evaluation.
+                </p>
+              </div>
+            )}
             <div>
               <label className="block text-sm text-white/60 mb-1.5">Description *</label>
               <Textarea

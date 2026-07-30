@@ -1,13 +1,22 @@
 /**
  * BuildProof — Transfer Showcase Test
  *
- * Demonstrates _send_gen() actually firing by exhausting all 3 appeal rounds.
- * After the 4th evaluation with appeal_count >= MAX_APPEALS, the contract calls
+ * Proves _send_gen() fires by exhausting all 3 appeal rounds.
+ * On the 4th evaluation (appeal_count >= MAX_APPEALS), the contract calls
  * _send_gen(owner, escrow_amount) — escrow drops to 0 and payment_released=true.
  *
- * Flow:
- *   Create → Deposit (payable) → Accept → Evidence → [Evaluate → Appeal → Reopen] × 3 → Final Evaluate
- *   On final evaluate: appeal_count(3) >= MAX_APPEALS(3) → _send_gen(owner) fires
+ * ABI under test:
+ *   deposit_escrow(project_id)  value=GEN (payable — no amount arg)
+ *   submit_evidence(project_id, type, title, url, description, permit_number, is_dispute)
+ *
+ * Balance assertions:
+ *   - ownerBalBeforeDeposit → ownerBalAfterDeposit : balance DECREASES (GEN into contract)
+ *   - ownerBalBeforeTransfer → ownerBalAfterTransfer : balance INCREASES (_send_gen fired)
+ *
+ * Appeal outcome assertions:
+ *   - appeal_count increments after each submit_appeal
+ *   - status transitions verified at every step
+ *   - escrow_deposited = 0 after _send_gen fires
  *
  * Usage:
  *   $env:OWNER_PK="0x..."; $env:CONTRACTOR_PK="0x..."; $env:NEXT_PUBLIC_CONTRACT_ADDRESS="0x..."; npx tsx e2e_transfer.ts
@@ -34,7 +43,7 @@ const readClient        = createClient({ chain: studionet, endpoint: RPC_URL } a
 
 type Hash = `0x${string}`;
 
-const GEN2 = BigInt("2000000000000000000");  // 2 GEN in wei
+const GEN2 = BigInt("2000000000000000000");
 
 async function finalize(client: any, hash: Hash, label: string) {
   const r: any = await client.waitForTransactionReceipt({
@@ -61,16 +70,39 @@ async function read(fn: string, args: any[] = []) {
   return readClient.readContract({ address: CONTRACT, functionName: fn, args });
 }
 
+async function getBalance(address: string): Promise<bigint> {
+  const bal = await readClient.getBalance({ address: address as `0x${string}` });
+  return BigInt(bal);
+}
+
 function sep(title: string) {
   console.log(`\n${"─".repeat(64)}`);
   console.log(`  ${title}`);
   console.log("─".repeat(64));
 }
 
+function assertEq(label: string, actual: any, expected: any) {
+  const ok = String(actual) === String(expected);
+  console.log(`  ${ok ? "✅" : "❌"} assert ${label}: ${actual}${ok ? "" : ` (expected ${expected})`}`);
+  if (!ok) throw new Error(`Assertion failed — ${label}: got "${actual}", expected "${expected}"`);
+}
+
+function assertGt(label: string, a: bigint, b: bigint) {
+  const ok = a > b;
+  console.log(`  ${ok ? "✅" : "❌"} assert ${label}: ${a} > ${b}`);
+  if (!ok) throw new Error(`Assertion failed — ${label}: ${a} is not > ${b}`);
+}
+
+function assertLt(label: string, a: bigint, b: bigint) {
+  const ok = a < b;
+  console.log(`  ${ok ? "✅" : "❌"} assert ${label}: ${a} < ${b}`);
+  if (!ok) throw new Error(`Assertion failed — ${label}: ${a} is not < ${b}`);
+}
+
 async function main() {
   console.log("═".repeat(64));
-  console.log("  BuildProof — _send_gen Transfer Showcase");
-  console.log("  Strategy: exhaust 3 appeal rounds → refund fires on 4th eval");
+  console.log("  BuildProof — _send_gen Transfer Showcase + Balance Assertions");
+  console.log("  Strategy: exhaust 3 appeal rounds → _send_gen(owner) fires on 4th eval");
   console.log("═".repeat(64));
   console.log(`  Contract  : ${CONTRACT}`);
   console.log(`  Owner     : ${ownerAccount.address}`);
@@ -81,7 +113,7 @@ async function main() {
   sep("SETUP — Create project");
   await write(ownerClient, "create_project", "create_project", [
     "Transfer Showcase Project",
-    "Test project to demonstrate escrow custody and _send_gen refund path " +
+    "Test project to demonstrate payable escrow custody and _send_gen refund path " +
     "after all appeal rounds are exhausted.",
     "Abuja, Nigeria",
     GEN2,
@@ -92,100 +124,132 @@ async function main() {
   const ownerIds = await read("get_owner_projects", [ownerAccount.address]) as string[];
   const pid = ownerIds[ownerIds.length - 1];
   console.log(`  Project ID: ${pid}`);
+  let p: any = await read("project_details", [pid]);
+  assertEq("status after create", p.status, "draft");
+  assertEq("appeal_count after create", p.appeal_count, 0);
 
   sep("SETUP — Owner deposits 2 GEN escrow (payable — GEN sent as tx value)");
+  const ownerBalBeforeDeposit = await getBalance(ownerAccount.address);
+  console.log(`  Owner balance before deposit: ${ownerBalBeforeDeposit} wei`);
+
   await write(ownerClient, "deposit_escrow", "deposit_escrow", [pid], GEN2);
 
-  let p: any = await read("project_details", [pid]);
-  console.log(`  escrow_deposited : ${p.escrow_deposited} wei  (${Number(p.escrow_deposited) / 1e18} GEN)`);
-  console.log(`  status           : ${p.status}`);
+  const ownerBalAfterDeposit = await getBalance(ownerAccount.address);
+  console.log(`  Owner balance after deposit : ${ownerBalAfterDeposit} wei`);
+  assertLt("owner balance decreased (GEN entered contract)", ownerBalAfterDeposit, ownerBalBeforeDeposit);
+
+  p = await read("project_details", [pid]);
+  assertEq("escrow_deposited = 2 GEN", p.escrow_deposited, String(GEN2));
+  assertEq("status still draft before accept", p.status, "draft");
 
   sep("SETUP — Contractor accepts");
   await write(contractorClient, "accept_project", "accept_project", [pid]);
   p = await read("project_details", [pid]);
-  console.log(`  status: ${p.status}`);  // escrowed
+  assertEq("status after accept", p.status, "escrowed");
 
-  sep("SETUP — Submit placeholder evidence (unverifiable — AI will reject)");
-  const evItems = [
-    ["certificate", "Structural Certificate", "https://example.com/struct-cert", "Structural works completed per spec."],
-    ["report",      "MEP Sign-Off",           "https://example.com/mep-signoff", "MEP systems installed and tested."],
-    ["certificate", "Fire Safety Report",     "https://example.com/fire-safety", "Fire suppression system certified."],
+  sep("SETUP — Submit placeholder evidence (no permit numbers — AI will reject via fail-closed)");
+  // permit_number = "" and example.com URLs → authoritative lookup returns UNCONFIRMED
+  // → verified_count = 0 < total_count = 3 → contract_passed = False
+  const evItems: [string, string, string, string, string][] = [
+    ["certificate", "Structural Certificate", "https://example.com/struct-cert",
+     "Structural works completed per spec.", ""],
+    ["report",      "MEP Sign-Off",           "https://example.com/mep-signoff",
+     "MEP systems installed and tested.", ""],
+    ["certificate", "Fire Safety Report",     "https://example.com/fire-safety",
+     "Fire suppression system certified.", ""],
   ];
-  for (const [type, title, url, desc] of evItems) {
-    await write(contractorClient, title, "submit_evidence", [pid, type, title, url, desc, false]);
+  for (const [type, title, url, desc, pnum] of evItems) {
+    await write(contractorClient, title, "submit_evidence", [pid, type, title, url, desc, pnum, false]);
   }
+  p = await read("project_details", [pid]);
+  assertEq("evidence_count", p.evidence_count, 3);
+  assertEq("status after evidence", p.status, "evidence_submitted");
 
   // ── APPEAL LOOP ────────────────────────────────────────────────────────────
-  // 3 rounds of: request_inspection → evaluate (rejected) → submit_appeal → reopen
+  // 3 rounds: request_inspection → evaluate (rejected) → submit_appeal → reopen
 
   for (let round = 1; round <= 3; round++) {
     sep(`APPEAL ROUND ${round}/3`);
 
     await write(contractorClient, `[Round ${round}] request_inspection`, "request_inspection", [pid]);
+    p = await read("project_details", [pid]);
+    assertEq(`status = under_review (round ${round})`, p.status, "under_review");
 
-    console.log(`  ⏳ [Round ${round}] AI evaluation running (2–8 min) — validators independently assess evidence…`);
+    console.log(`  ⏳ [Round ${round}] AI evaluation running — validators check authoritative permit sources…`);
     await write(ownerClient, `[Round ${round}] evaluate_completion`, "evaluate_completion", [pid]);
 
     p = await read("project_details", [pid]);
     const cs: any = await read("consensus_status", [pid]);
-    console.log(`  result           : ${cs.passed ? "APPROVED" : "REJECTED"} (confidence: ${cs.confidence_pct}%)`);
-    console.log(`  reason           : ${cs.reason}`);
-    console.log(`  escrow_deposited : ${p.escrow_deposited} wei  ← still locked`);
-    console.log(`  appeal_count     : ${p.appeal_count}`);
+    console.log(`  result         : ${cs.passed ? "APPROVED" : "REJECTED"} (confidence: ${cs.confidence_pct}%)`);
+    console.log(`  reason         : ${cs.reason}`);
 
-    if (round < 3) {
-      await write(ownerClient, `[Round ${round}] submit_appeal`, "submit_appeal", [
-        pid,
-        `Round ${round} appeal: additional verification documents being sourced. ` +
-        `Contractor has engaged regulatory consultants to obtain certified copies.`,
-      ]);
-      await write(contractorClient, `[Round ${round}] reopen_for_evidence`, "reopen_for_evidence", [pid]);
-    } else {
-      // Round 3 — file final appeal to push appeal_count to MAX_APPEALS
-      await write(ownerClient, "[Round 3] submit_appeal (final)", "submit_appeal", [
-        pid,
-        "Final appeal: all parties agree to submit to automated adjudication. " +
-        "Requesting final AI determination with escrow resolution.",
-      ]);
-      await write(contractorClient, "[Round 3] reopen_for_evidence", "reopen_for_evidence", [pid]);
-    }
+    assertEq(`status = rejected (round ${round})`, p.status, "rejected");
+    assertEq(`escrow still locked (round ${round})`, p.escrow_deposited, String(GEN2));
+    assertEq(`appeal_count before submit_appeal (round ${round})`, p.appeal_count, round - 1);
+
+    await write(ownerClient, `[Round ${round}] submit_appeal`, "submit_appeal", [
+      pid,
+      `Round ${round} appeal: contractor is sourcing certified copies from regulatory authorities. ` +
+      `Requesting further evaluation with certified documentation.`,
+    ]);
+    p = await read("project_details", [pid]);
+    assertEq(`status = appealed (round ${round})`, p.status, "appealed");
+    assertEq(`appeal_count = ${round} after appeal`, p.appeal_count, round);
+
+    await write(contractorClient, `[Round ${round}] reopen_for_evidence`, "reopen_for_evidence", [pid]);
+    p = await read("project_details", [pid]);
+    assertEq(`status = evidence_submitted after reopen (round ${round})`, p.status, "evidence_submitted");
   }
 
   // ── FINAL EVALUATION — _send_gen FIRES ────────────────────────────────────
 
   sep("FINAL EVALUATION — appeal_count = 3 = MAX_APPEALS → _send_gen(owner) fires");
   p = await read("project_details", [pid]);
-  console.log(`  appeal_count before eval : ${p.appeal_count}  (= MAX_APPEALS)`);
-  console.log(`  escrow_deposited before  : ${p.escrow_deposited} wei`);
+  assertEq("appeal_count = MAX_APPEALS (3) before final eval", p.appeal_count, 3);
+  assertEq("escrow_deposited intact before final eval", p.escrow_deposited, String(GEN2));
 
-  await write(contractorClient, "request_inspection", "request_inspection", [pid]);
+  const ownerBalBeforeTransfer = await getBalance(ownerAccount.address);
+  console.log(`  Owner balance before _send_gen: ${ownerBalBeforeTransfer} wei`);
 
-  console.log("  ⏳ Final AI evaluation running — on rejection, _send_gen(owner) will fire…");
+  await write(contractorClient, "request_inspection [FINAL]", "request_inspection", [pid]);
+  p = await read("project_details", [pid]);
+  assertEq("status = under_review before final eval", p.status, "under_review");
+
+  console.log("  ⏳ Final AI evaluation — on rejection, Python contract logic fires _send_gen(owner)…");
   await write(ownerClient, "evaluate_completion [FINAL]", "evaluate_completion", [pid]);
 
   // ── RESULT ─────────────────────────────────────────────────────────────────
 
   sep("RESULT — Post-transfer state");
   p = await read("project_details", [pid]);
-  const cs: any = await read("consensus_status", [pid]);
+  const finalCs: any = await read("consensus_status", [pid]);
 
-  console.log(`  project status     : ${p.status}`);
+  const ownerBalAfterTransfer = await getBalance(ownerAccount.address);
+  const delta = ownerBalAfterTransfer - ownerBalBeforeTransfer;
+
+  console.log(`  Owner balance before _send_gen : ${ownerBalBeforeTransfer} wei`);
+  console.log(`  Owner balance after  _send_gen : ${ownerBalAfterTransfer} wei`);
+  console.log(`  Balance delta                  : +${delta} wei`);
+  console.log(`\n  project status     : ${p.status}`);
   console.log(`  payment_released   : ${p.payment_released}`);
-  console.log(`  escrow_deposited   : ${p.escrow_deposited} wei  ← should be 0`);
+  console.log(`  escrow_deposited   : ${p.escrow_deposited} wei`);
   console.log(`  appeal_count       : ${p.appeal_count}`);
-  console.log(`  AI passed          : ${cs.passed}`);
-  console.log(`  confidence_pct     : ${cs.confidence_pct}%`);
-  console.log(`  reason             : ${cs.reason}`);
+  console.log(`  AI passed          : ${finalCs.passed}`);
+  console.log(`  confidence_pct     : ${finalCs.confidence_pct}%`);
+  console.log(`  reason             : ${finalCs.reason}`);
+
+  assertEq("status = finalized", p.status, "finalized");
+  assertEq("payment_released = true", p.payment_released, true);
+  assertEq("escrow_deposited = 0 (GEN left contract)", p.escrow_deposited, "0");
+  assertEq("appeal_count = MAX_APPEALS (3)", p.appeal_count, 3);
+  assertGt("owner balance increased — _send_gen confirmed fired", ownerBalAfterTransfer, ownerBalBeforeTransfer);
 
   console.log("\n" + "═".repeat(64));
-  if (p.status === "finalized" && p.payment_released && p.escrow_deposited === "0") {
-    console.log("  ✅ _send_gen(owner) CONFIRMED FIRED");
-    console.log("  ✅ escrow_deposited = 0 — GEN left the contract");
-    console.log("  ✅ payment_released = true — state correctly finalized");
-    console.log(`  ✅ 2 GEN returned to owner: ${ownerAccount.address}`);
-  } else {
-    console.log(`  ⚠️  Unexpected state: ${p.status} | escrow: ${p.escrow_deposited}`);
-  }
+  console.log("  ✅ _send_gen(owner) CONFIRMED FIRED");
+  console.log("  ✅ escrow_deposited = 0 — GEN left the contract");
+  console.log("  ✅ payment_released = true — state correctly finalized");
+  console.log("  ✅ owner balance increased — funds returned on-chain");
+  console.log(`  ✅ 2 GEN returned to owner: ${ownerAccount.address}`);
   console.log("═".repeat(64));
   console.log(`  Contract : ${CONTRACT}`);
   console.log(`  Project  : ${pid}`);

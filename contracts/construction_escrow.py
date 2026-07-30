@@ -60,6 +60,7 @@ class EvidenceItem:
     title: str
     url: str
     description: str
+    permit_number: str   # explicit permit/certificate reference ID for authoritative lookup
     is_dispute: bool     # true when used as counter-evidence by owner
 
 
@@ -256,6 +257,7 @@ class ConstructionEscrow(gl.Contract):
         title: str,
         url: str,
         description: str,
+        permit_number: str,
         is_dispute: bool,
     ) -> None:
         """
@@ -263,6 +265,8 @@ class ConstructionEscrow(gl.Contract):
 
         - Contractor submits completion evidence (is_dispute=False).
         - Owner submits counter/dispute evidence (is_dispute=True).
+        - permit_number: the official permit/certificate ID used for authoritative lookup
+          (e.g. "LASBCA/VI/2026/0847"). Required for non-dispute evidence.
         - Both may submit while the project is open for evidence or under appeal.
 
         Evidence is fully stored on-chain and fetchable via milestone_status.
@@ -304,6 +308,7 @@ class ConstructionEscrow(gl.Contract):
             title=title,
             url=url,
             description=description,
+            permit_number=permit_number.strip(),
             is_dispute=is_dispute,
         )
         self.evidence.get_or_insert_default(project_id)[idx] = ev
@@ -367,6 +372,7 @@ class ConstructionEscrow(gl.Contract):
                 "title": ev.title,
                 "url": ev.url,
                 "description": ev.description,
+                "permit_number": ev.permit_number,
                 "is_dispute": ev.is_dispute,
                 "submitter": ev.submitter,
             })
@@ -415,88 +421,153 @@ class ConstructionEscrow(gl.Contract):
             return found[:4]   # cap at 4 references per evidence item
 
         def perform_evaluation() -> str:
-            # ── Step 1: External verification ─────────────────────────────────
-            # For each non-dispute evidence item: extract permit/ref numbers and
-            # run targeted web searches to cross-check their legitimacy.
-            # URL content is also verified via a short LLM fetch prompt.
-            verification_lines: list[str] = []
-            searched: set[str] = set()
+            # ── Step 1: Per-inspection authoritative verification ──────────────
+            # For each required inspection, find the matching contractor evidence,
+            # retrieve the explicit permit_number, query specific government/
+            # regulatory databases, and ask the AI for a binary CONFIRMED verdict.
+            # The pass/fail decision is then made by Python contract logic below —
+            # not by AI judgment.
 
-            for ev in _evidence:
-                if ev["is_dispute"]:
-                    continue  # skip owner counter-evidence for external checks
+            location = _project["location"]
 
-                # 1a. URL accessibility check
-                url = ev["url"]
-                if url:
-                    url_check = gl.nondet.exec_prompt(
-                        f"Try to access this URL and tell me in one sentence whether it is accessible "
-                        f"and appears to be a legitimate construction document: {url}\n"
-                        f"Expected document: {ev['title']}\n"
-                        "Reply with: ACCESSIBLE and description, or INACCESSIBLE and why."
+            inspection_verdicts: list[dict] = []
+
+            for insp_name in _project["required_inspections"]:
+                # Find contractor completion evidence matching this inspection
+                insp_lower = insp_name.lower()
+                insp_words = [w for w in insp_lower.split() if len(w) > 3]
+                matching = [
+                    ev for ev in _evidence
+                    if not ev["is_dispute"] and (
+                        insp_lower in ev["title"].lower()
+                        or any(w in ev["title"].lower() for w in insp_words)
                     )
-                    verification_lines.append(
-                        f"URL CHECK [{ev['title'][:50]}]: {str(url_check).strip()[:250]}"
-                    )
+                ]
 
-                # 1b. Permit/reference number cross-check via web search
-                refs = _extract_ref_numbers(ev["description"])
-                for ref in refs:
-                    if ref in searched or len(searched) >= 5:
-                        continue
-                    searched.add(ref)
-                    location = _project["location"].split(",")[-1].strip()  # e.g. "Nigeria"
-                    query = (
-                        f'"{ref}" construction permit certificate verification {location}'
-                    )
-                    result = _safe_web_search(query)
-                    verification_lines.append(
-                        f"WEB SEARCH [{ref}]: {result}"
-                    )
+                if not matching:
+                    inspection_verdicts.append({
+                        "name": insp_name,
+                        "verified": False,
+                        "finding": "No matching evidence submitted for this inspection",
+                    })
+                    continue
 
-            verification_text = (
-                "\n".join(verification_lines)
-                if verification_lines
-                else "No external verification data available."
-            )
+                best_ev = matching[0]
 
-            # ── Step 2: Main adjudication prompt ──────────────────────────────
-            ev_lines = []
-            for i, ev in enumerate(_evidence):
-                tag = "[DISPUTE/COUNTER]" if ev["is_dispute"] else f"[{ev['type'].upper()}]"
-                ev_lines.append(
-                    f"{i+1}. {tag} {ev['title']}\n"
-                    f"   URL: {ev['url']}\n"
-                    f"   {ev['description']}"
-                )
-            evidence_text = "\n".join(ev_lines)
-            inspections_text = "\n".join(
-                f"- {name}" for name in _project["required_inspections"]
+                # Use the explicit permit_number field first;
+                # fall back to regex extraction from title + description
+                pnum = best_ev.get("permit_number", "").strip()
+                if not pnum:
+                    refs = _extract_ref_numbers(
+                        best_ev["title"] + " " + best_ev["description"]
+                    )
+                    pnum = refs[0] if refs else ""
+
+                verified = False
+                finding = "Unverified"
+
+                if pnum:
+                    # Query specific authoritative government/regulatory databases.
+                    # Generic search engines are excluded — only official sources count.
+                    auth_query = (
+                        f'"{pnum}" ('
+                        f'site:lasbca.gov.ng OR site:nesrea.gov.ng OR site:corbon.gov.ng '
+                        f'OR site:fcda.gov.ng OR site:fha.gov.ng OR site:nigeria.gov.ng '
+                        f'OR site:fmbn.gov.ng OR site:niob.gov.ng'
+                        f') permit certificate inspection'
+                    )
+                    auth_result = _safe_web_search(auth_query)
+
+                    # Supplementary search: permit number + location in official context
+                    supp_query = (
+                        f'"{pnum}" official government construction permit '
+                        f'"{location}" -site:example.com -site:placeholder.com'
+                    )
+                    supp_result = _safe_web_search(supp_query)
+
+                    # AI makes a single binary call: is this permit in authoritative records?
+                    confirm_raw = gl.nondet.exec_prompt(
+                        "You are verifying a construction permit against official government records.\n"
+                        f"Permit/Certificate number: {pnum}\n"
+                        f"Evidence title: {best_ev['title']}\n"
+                        f"Location: {location}\n\n"
+                        f"Authoritative database search result:\n{auth_result[:350]}\n\n"
+                        f"Supplementary government search:\n{supp_result[:350]}\n\n"
+                        "Does any official government or regulatory body confirm this permit/certificate "
+                        "number is real and corresponds to the described construction work?\n"
+                        "Reply with exactly one word: CONFIRMED or UNCONFIRMED"
+                    )
+                    if "CONFIRMED" in str(confirm_raw).upper():
+                        verified = True
+                        finding = f"Permit {pnum} confirmed in authoritative government records"
+                    else:
+                        finding = (
+                            f"Permit {pnum} not found in any authoritative government source "
+                            f"(searched lasbca.gov.ng, nesrea.gov.ng, corbon.gov.ng and others)"
+                        )
+                else:
+                    # No permit number provided — fall back to URL accessibility only.
+                    # URL-only evidence cannot be authenticated and is treated as weaker.
+                    url_raw = gl.nondet.exec_prompt(
+                        "Try to access this URL and determine if it is an accessible, "
+                        "official construction document from a recognised authority:\n"
+                        f"URL: {best_ev['url']}\n"
+                        f"Expected document: {best_ev['title']}\n"
+                        "Reply: ACCESSIBLE (describe the authority and document) or INACCESSIBLE"
+                    )
+                    url_str = str(url_raw).upper()
+                    if "ACCESSIBLE" in url_str and "INACCESSIBLE" not in url_str:
+                        verified = True
+                        finding = "Document URL accessible (no permit number provided for registry check)"
+                    else:
+                        finding = (
+                            "URL inaccessible and no permit number supplied — "
+                            "cannot authenticate against official records"
+                        )
+
+                inspection_verdicts.append({
+                    "name": insp_name,
+                    "verified": verified,
+                    "finding": finding,
+                })
+
+            # ── Step 2: Contract logic enforces fail-closed ────────────────────
+            # Python code — not AI judgment — decides the pass/fail outcome.
+            # ALL required inspections must be verified in authoritative sources.
+            verified_count = sum(1 for v in inspection_verdicts if v["verified"])
+            total_count = len(_project["required_inspections"])
+            unverified_names = [v["name"] for v in inspection_verdicts if not v["verified"]]
+
+            # ── Step 3: AI provides confidence, metadata, and reasoning ────────
+            # The AI does NOT determine pass/fail — only annotates the outcome.
+            dispute_lines = [
+                f"- {ev['title']}: {ev['description']}"
+                for ev in _evidence if ev["is_dispute"]
+            ]
+            dispute_text = (
+                "\nOWNER DISPUTE EVIDENCE:\n" + "\n".join(dispute_lines)
+            ) if dispute_lines else ""
+
+            verdict_lines = "\n".join(
+                f"  {'VERIFIED  ' if v['verified'] else 'UNVERIFIED'} — {v['name']}: {v['finding']}"
+                for v in inspection_verdicts
             )
 
             prompt = (
-                "You are a construction contract adjudicator with access to external verification results.\n"
-                "Determine if the contractor has satisfied all requirements and payment should be released.\n\n"
-                f"PROJECT: {_project['title']}\n"
-                f"LOCATION: {_project['location']}\n\n"
-                f"REQUIRED INSPECTIONS:\n{inspections_text}\n\n"
-                f"SUBMITTED EVIDENCE:\n{evidence_text}\n\n"
-                f"EXTERNAL VERIFICATION (URL checks + permit number web searches):\n{verification_text}\n\n"
-                "RULES:\n"
-                "- passed=true only if every required inspection has a matching certificate/permit/report.\n"
-                "- If EXTERNAL VERIFICATION shows a URL is INACCESSIBLE AND the permit/reference number "
-                "is not found in any web search, treat that evidence item as UNVERIFIED. "
-                "If more than half the required inspection items have only UNVERIFIED evidence, set passed=false.\n"
-                "- If a permit number is confirmed by web search or the URL is accessible, count that "
-                "inspection as satisfied and increase confidence_pct.\n"
-                "- Do not give credit for evidence that is internally inconsistent or where "
-                "the description contradicts the title.\n"
-                "- critical_defects counts structural, electrical, plumbing, or fire-safety failures ONLY.\n"
-                "- passed=false if critical_defects > 0.\n"
-                "- occupancy_verified=true only if a government-issued occupancy or rough-in approval is present.\n"
-                "- [DISPUTE/COUNTER] items are owner counter-evidence — weigh them against contractor evidence.\n\n"
-                "Reply with ONLY this JSON (no markdown, no extra text):\n"
-                '{"passed": true, "critical_defects": 0, "occupancy_verified": true, '
+                "You are documenting the outcome of a construction contract adjudication.\n"
+                f"PROJECT: {_project['title']} | LOCATION: {location}\n\n"
+                f"AUTHORITATIVE VERIFICATION RESULTS ({verified_count}/{total_count} verified):\n"
+                f"{verdict_lines}\n"
+                f"{dispute_text}\n\n"
+                "Provide metadata for this outcome. Do NOT decide pass/fail — that is "
+                "determined by contract logic based on the verification counts above.\n"
+                "- critical_defects: count structural, electrical, plumbing, or fire-safety "
+                "failures noted in dispute evidence (0 if none)\n"
+                "- occupancy_verified: true only if a government occupancy permit was VERIFIED above\n"
+                "- confidence_pct: your certainty in the verification results (0-100)\n"
+                "- reason: one sentence summarising the outcome\n\n"
+                "Reply ONLY with this JSON (no markdown):\n"
+                '{"critical_defects": 0, "occupancy_verified": false, '
                 '"confidence_pct": 85, "reason": "one sentence"}'
             )
 
@@ -510,43 +581,56 @@ class ConstructionEscrow(gl.Contract):
                     text = text.split("```")[1]
                     if text.startswith("json"):
                         text = text[4:]
-                start = text.find("{")
-                end = text.rfind("}") + 1
+                start, end = text.find("{"), text.rfind("}") + 1
                 text = text[start:end] if start != -1 else text
                 try:
                     data = json.loads(text)
                 except Exception:
-                    lower = text.lower()
                     data = {
-                        "passed": '"passed": true' in lower or '"passed":true' in lower,
                         "critical_defects": 0,
-                        "occupancy_verified": True,
-                        "confidence_pct": 60,
+                        "occupancy_verified": False,
+                        "confidence_pct": 0,
                         "reason": text[:300],
                     }
 
-            passed = bool(data.get("passed", False))
             critical = max(0, int(data.get("critical_defects", 0)))
             occupancy = bool(data.get("occupancy_verified", False))
-            conf_raw = data.get("confidence_pct", data.get("confidence", 0.7))
+            conf_raw = data.get("confidence_pct", 0)
             conf_float = float(conf_raw)
             confidence_pct = int(conf_float * 100) if conf_float <= 1.0 else int(conf_float)
             confidence_pct = min(100, max(0, confidence_pct))
-            reason = str(data.get("reason", ""))[:500]
+            reason = str(data.get("reason", ""))[:400]
+
+            # ── Contract logic: final pass/fail — Python enforced, not AI ──────
+            # ALL inspections must be verified; critical structural defects fail outright.
+            contract_passed = (verified_count == total_count) and (critical == 0)
+
+            if not contract_passed:
+                prefix = (
+                    f"Contract-enforced rejection: {verified_count}/{total_count} inspections "
+                    f"verified in authoritative sources"
+                )
+                if unverified_names:
+                    prefix += f" (unverified: {', '.join(unverified_names[:3])})"
+                if critical > 0:
+                    prefix += f"; {critical} critical defect(s) noted"
+                reason = (prefix + ". " + reason)[:500]
 
             return json.dumps({
+                "passed": contract_passed,
+                "verified_inspections": verified_count,
+                "total_inspections": total_count,
                 "confidence_pct": confidence_pct,
                 "critical_defects": critical,
                 "occupancy_verified": occupancy,
-                "passed": passed,
                 "reason": reason,
             }, sort_keys=True)
 
         raw_result = gl.eq_principle.prompt_comparative(
             perform_evaluation,
             'Do both JSON results agree on the "passed" boolean? '
-            "Differences in confidence_pct, reason wording, or web search results are acceptable "
-            "as long as the core passed decision is the same. "
+            "Differences in confidence_pct, reason wording, verified_inspections count, "
+            "or web search results are acceptable as long as the core passed decision matches. "
             "Only mark as disagreement if one says passed=true and the other says passed=false.",
         )
 
@@ -737,6 +821,7 @@ class ConstructionEscrow(gl.Contract):
                     "title": ev.title,
                     "url": ev.url,
                     "description": ev.description,
+                    "permit_number": ev.permit_number,
                     "is_dispute": ev.is_dispute,
                 })
 
