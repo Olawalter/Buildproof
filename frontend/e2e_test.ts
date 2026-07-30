@@ -59,7 +59,17 @@ async function write(client: any, label: string, fn: string, args: any[], value 
   process.stdout.write(`  ⏳ ${label} … `);
   const hash: Hash = await client.writeContract({ address: CONTRACT, functionName: fn, args, value });
   process.stdout.write(`tx ${hash.slice(0, 10)}… `);
-  await finalize(client, hash, label);
+  // Retry finalize up to 3 times on transient RPC errors
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await finalize(client, hash, label);
+      break;
+    } catch (err: any) {
+      if (attempt === 3 || !String(err?.message).includes("fetch failed")) throw err;
+      process.stdout.write(`[RPC retry ${attempt}]… `);
+      await new Promise(r => setTimeout(r, 15_000));
+    }
+  }
   console.log("✓");
   return hash;
 }
