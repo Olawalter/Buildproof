@@ -66,7 +66,9 @@ async function write(client: any, label: string, fn: string, args: any[], value 
       await finalize(client, hash, label);
       break;
     } catch (err: any) {
-      if (attempt === 3 || !String(err?.message).includes("fetch failed")) throw err;
+      const msg = String(err?.message ?? err);
+      const transient = msg.includes("fetch failed") || msg.includes("Cannot convert") || msg.includes("BigInt") || msg.includes("network");
+      if (attempt === 3 || !transient) throw err;
       process.stdout.write(`[RPC retry ${attempt}]… `);
       await new Promise(r => setTimeout(r, 15_000));
     }
