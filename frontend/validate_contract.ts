@@ -91,27 +91,28 @@ async function main() {
   sep("STEP 2 — Contractor accepts");
   await write(contractorClient, "accept_project", "accept_project", [pid]);
 
-  sep("FIX #2 — deposit_escrow must equal contract_value");
+  sep("FIX #2 — deposit_escrow must equal contract_value (payable — GEN sent as tx value)");
   // Try depositing wrong amount — must revert
   await expectRevert(ownerClient, "deposit wrong amount (5 GEN, not 10)", "deposit_escrow",
-    [pid, 5_000_000_000_000_000_000n]);
-  // Correct deposit
+    [pid], 5_000_000_000_000_000_000n);
+  // Correct deposit — amount sent as tx value, not as argument
   await write(ownerClient, "deposit_escrow (10 GEN = contract_value)", "deposit_escrow",
-    [pid, 10_000_000_000_000_000_000n]);
+    [pid], 10_000_000_000_000_000_000n);
 
   sep("STEP 3 — Submit evidence");
+  // permit_number is now the 6th argument — stored on-chain for authoritative registry lookup
   const evidenceItems = [
     ["certificate", "Foundation Footing Certificate", "https://docs.example.com/footing-cert.pdf",
-     "Municipal footing inspection passed. Inspector #FL-4418. Zero deficiencies."],
+     "Municipal footing inspection passed. Inspector #FL-4418. Zero deficiencies.", "FL-FOOT-2026-4418"],
     ["permit",      "Tampa Foundation Permit TMP-2026-1001", "https://docs.example.com/permit.pdf",
-     "Permit TMP-2026-1001 approved by City of Tampa Building Dept. Inspector: R. Johnson."],
+     "Permit TMP-2026-1001 approved by City of Tampa Building Dept. Inspector: R. Johnson.", "TMP-2026-1001"],
     ["certificate", "Pre-Pour Rebar Inspection Passed", "https://docs.example.com/rebar-cert.pdf",
-     "Rebar placement and cover per structural plans. Pre-pour approved 2026-07-20."],
+     "Rebar placement and cover per structural plans. Pre-pour approved 2026-07-20.", "FL-REBAR-2026-0720"],
     ["report",      "Structural Engineer Slab Report", "https://docs.example.com/slab-report.pdf",
-     "Torres Structural PE#FL-88241 confirms slab per ACI 318. No deficiencies."],
+     "Torres Structural PE#FL-88241 confirms slab per ACI 318. No deficiencies.", "PE-FL-88241"],
   ];
-  for (const [type, title, url, desc] of evidenceItems) {
-    await write(contractorClient, `evidence:${type}`, "submit_evidence", [pid, type, title, url, desc, false]);
+  for (const [type, title, url, desc, pnum] of evidenceItems) {
+    await write(contractorClient, `evidence:${type}`, "submit_evidence", [pid, type, title, url, desc, pnum, false]);
   }
 
   sep("FIX #6 — submit_evidence blocked after request_inspection");
@@ -119,7 +120,7 @@ async function main() {
   // Contractor tries to add more evidence after inspection requested — must revert
   await expectRevert(contractorClient, "evidence after inspection requested (must reject)",
     "submit_evidence",
-    [pid, "photo", "Late addition", "https://docs.example.com/late.jpg", "Should not be accepted", false]);
+    [pid, "photo", "Late addition", "https://docs.example.com/late.jpg", "Should not be accepted", "", false]);
 
   sep("EITHER PARTY — evaluate_completion callable by both parties");
   // Both parties can now trigger evaluation — no rejection expected
