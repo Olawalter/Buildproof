@@ -68,19 +68,31 @@ The adjudication problem cannot be solved with a deterministic smart contract �
 
 **Evidence**: Both Owner and Contractor can submit evidence at valid stages. Evidence items include type, title, URL, description, and submitter address — permanently stored on-chain.
 
-**Evaluation**: The `evaluate_completion` method runs in two stages inside the nondet closure:
+**Evaluation**: The `evaluate_completion` method runs in three stages inside the nondet closure:
 
 ```python
-# Stage 1 — External verification per evidence item
-for ev in _evidence:
-    url_check = gl.nondet.exec_prompt(f"Verify this URL: {ev['url']}")
-    refs = _extract_ref_numbers(ev["description"])   # regex: permit IDs, ref numbers
-    for ref in refs:
-        result = gl.nondet.web_search(f'"{ref}" construction permit verification {location}')
+# Stage 1 — Per-inspection authoritative verification loop
+# For every required inspection, find matching contractor evidence,
+# read its on-chain permit_number, and query specific government databases only.
+for insp_name in _project["required_inspections"]:
+    pnum = best_ev["permit_number"]   # explicit on-chain field
+    auth_result = gl.nondet.web_search(
+        f'"{pnum}" (site:lasbca.gov.ng OR site:nesrea.gov.ng OR site:corbon.gov.ng '
+        f'OR site:fcda.gov.ng OR site:fha.gov.ng OR site:nigeria.gov.ng '
+        f'OR site:fmbn.gov.ng OR site:niob.gov.ng) permit certificate inspection'
+    )
+    verdict = gl.nondet.exec_prompt(
+        f"Permit number: {pnum}\nAuthoritative database result: {auth_result}\n"
+        "Reply with exactly one word: CONFIRMED or UNCONFIRMED"
+    )
 
-# Stage 2 — Adjudication with full context
-prompt = f"""...SUBMITTED EVIDENCE...\nEXTERNAL VERIFICATION:\n{verification_text}..."""
-decision = gl.nondet.exec_prompt(prompt)
+# Stage 2 — Contract logic enforces fail-closed (Python, not AI)
+verified_count = sum(1 for v in inspection_verdicts if v["verified"])
+total_count = len(_project["required_inspections"])
+contract_passed = (verified_count == total_count) and (critical == 0)
+
+# Stage 3 — AI annotates outcome metadata only (confidence_pct, reason)
+# The AI does NOT determine pass/fail — only documents the result.
 ```
 
 ```python
@@ -101,7 +113,7 @@ gl.eq_principle.prompt_comparative(
 - Final REJECTED → `_send_gen(owner, escrow_amount)`
 - CANCELLED → `_send_gen(owner, refund)`
 
-**Fail-closed evidence**: If more than half the required inspection items have only UNVERIFIED evidence (URL inaccessible AND permit number not confirmed by web search), `passed=false`. Evidence is not given the benefit of the doubt — it must be independently verifiable.
+**Fail-closed evidence**: Python contract logic — not AI judgment — decides pass/fail. ALL required inspections must return CONFIRMED against authoritative government registries AND critical defects must be zero. If even one inspection is unverified, `contract_passed = False`. The AI cannot override this decision.
 
 ### Contract ABI
 
@@ -110,7 +122,7 @@ gl.eq_principle.prompt_comparative(
 | `create_project(title, description, location, contract_value, inspection_names, contractor_address)` | Owner | Creates project and pre-assigns a specific contractor |
 | `deposit_escrow(project_id)` | Owner | Locks GEN escrow — GEN sent as tx value (`gl.message.value`), must equal `contract_value` |
 | `accept_project(project_id)` | Assigned contractor only | Accepts project; promotes to ESCROWED if funded |
-| `submit_evidence(project_id, type, title, url, description, is_dispute)` | Owner or Contractor | Stores evidence fully on-chain |
+| `submit_evidence(project_id, type, title, url, description, permit_number, is_dispute)` | Owner or Contractor | Stores evidence fully on-chain; `permit_number` is queried against authoritative registries during evaluation |
 | `request_inspection(project_id)` | Either party | Locks evidence, moves to UNDER_REVIEW |
 | `evaluate_completion(project_id)` | Either party | Runs GenLayer AI consensus with web verification |
 | `submit_appeal(project_id, reason)` | Either party | Appeals REJECTED decision (max 3) |
