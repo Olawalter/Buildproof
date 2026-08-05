@@ -53,6 +53,9 @@ export function ConsensusProgress({ data }: ConsensusProgressProps) {
   const passed = data.passed!;
   const confidence = data.confidence_pct ?? 0;
   const criticalDefects = data.critical_defects ?? 0;
+  const verificationFailed = data.verification_failed === true;
+  const verifiedInspections = data.verified_inspections;
+  const totalInspections = data.total_inspections;
 
   return (
     <Card className={cn(
@@ -85,11 +88,26 @@ export function ConsensusProgress({ data }: ConsensusProgressProps) {
             ) : (
               <ShieldX className="h-3.5 w-3.5" />
             )}
-            {passed ? "APPROVED" : "REJECTED"}
+            {passed ? "APPROVED" : verificationFailed ? "VERIFICATION FAILED" : "REJECTED"}
           </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
+        {/* Verification failure banner — official records could not be authenticated */}
+        {verificationFailed && (
+          <div className="rounded-xl bg-amber-500/8 border border-amber-500/20 p-4">
+            <p className="text-sm text-amber-400 font-medium mb-1">
+              Official records could not be verified
+              {typeof verifiedInspections === "number" && typeof totalInspections === "number"
+                ? ` — ${verifiedInspections}/${totalInspections} inspections confirmed in government registries`
+                : ""}
+            </p>
+            <p className="text-xs text-white/50 leading-relaxed">
+              Escrow payout is blocked (fail-closed). Submit evidence with valid official
+              permit/certificate numbers and request a new evaluation, or appeal the decision.
+            </p>
+          </div>
+        )}
         {/* Confidence */}
         <div>
           <div className="flex justify-between text-sm mb-2">

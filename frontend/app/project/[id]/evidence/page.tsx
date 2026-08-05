@@ -55,6 +55,12 @@ export default function EvidencePage({ params }: { params: Promise<{ id: string 
       toast.error("All fields are required.");
       return;
     }
+    // Contract enforces this on-chain too — completion evidence must carry
+    // an official permit/certificate number for registry verification
+    if (!isDispute && permitNumber.trim().length < 4) {
+      toast.error("An official permit/certificate number (min 4 characters) is required for completion evidence.");
+      return;
+    }
     // Role enforcement is handled by the contract on-chain
 
     try {
@@ -174,6 +180,7 @@ export default function EvidencePage({ params }: { params: Promise<{ id: string 
                   value={permitNumber}
                   onChange={(e) => setPermitNumber(e.target.value)}
                   placeholder="e.g. LASBCA/VI/2026/0847 or NESREA-REG-2026-4471"
+                  required
                 />
                 <p className="text-xs text-white/25 mt-1">
                   Official reference ID used to verify this document in government registries.

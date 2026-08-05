@@ -162,16 +162,17 @@ async function main() {
   p = await read("project_details", [pid]);
   assertEq("status after accept", p.status, "escrowed");
 
-  sep("SETUP — Submit placeholder evidence (no permit numbers — AI will reject via fail-closed)");
-  // permit_number = "" and example.com URLs → authoritative lookup returns UNCONFIRMED
-  // → verified_count = 0 < total_count = 3 → contract_passed = False
+  sep("SETUP — Submit evidence with invalid permit numbers (registry lookup fails → fail-closed)");
+  // Well-formed but non-existent permit numbers → authoritative registry lookup
+  // returns UNCONFIRMED → verified_count = 0 < total_count = 3 → contract_passed = False.
+  // (Empty permit numbers are now rejected at submission — tested separately.)
   const evItems: [string, string, string, string, string][] = [
     ["certificate", "Structural Certificate", "https://example.com/struct-cert",
-     "Structural works completed per spec.", ""],
+     "Structural works completed per spec.", "FAKE-STR-2026-0001"],
     ["report",      "MEP Sign-Off",           "https://example.com/mep-signoff",
-     "MEP systems installed and tested.", ""],
+     "MEP systems installed and tested.", "FAKE-MEP-2026-0002"],
     ["certificate", "Fire Safety Report",     "https://example.com/fire-safety",
-     "Fire suppression system certified.", ""],
+     "Fire suppression system certified.", "FAKE-FIR-2026-0003"],
   ];
   for (const [type, title, url, desc, pnum] of evItems) {
     await write(contractorClient, title, "submit_evidence", [pid, type, title, url, desc, pnum, false]);
@@ -179,6 +180,23 @@ async function main() {
   p = await read("project_details", [pid]);
   assertEq("evidence_count", p.evidence_count, 3);
   assertEq("status after evidence", p.status, "evidence_submitted");
+
+  sep("FAIL-CLOSED — completion evidence without permit number must revert");
+  try {
+    const h: Hash = await contractorClient.writeContract({
+      address: CONTRACT, functionName: "submit_evidence",
+      args: [pid, "photo", "No Permit Photo", "https://example.com/photo", "Photo without permit.", "", false],
+      value: 0n,
+    });
+    await finalize(contractorClient, h, "evidence without permit_number");
+    throw new Error("Assertion failed — evidence without permit_number was ACCEPTED (should revert)");
+  } catch (err: any) {
+    const msg = String(err?.message ?? err);
+    if (msg.includes("should revert") || msg.includes("was ACCEPTED")) throw err;
+    console.log("  ✅ assert evidence without permit_number correctly rejected on-chain");
+  }
+  p = await read("project_details", [pid]);
+  assertEq("evidence_count unchanged after rejected submission", p.evidence_count, 3);
 
   // ── APPEAL LOOP ────────────────────────────────────────────────────────────
   // 3 rounds: request_inspection → evaluate (rejected) → submit_appeal → reopen
@@ -250,9 +268,13 @@ async function main() {
   console.log(`  escrow_deposited   : ${p.escrow_deposited} wei`);
   console.log(`  appeal_count       : ${p.appeal_count}`);
   console.log(`  AI passed          : ${finalCs.passed}`);
+  console.log(`  verification_failed: ${finalCs.verification_failed}`);
+  console.log(`  verified/total     : ${finalCs.verified_inspections}/${finalCs.total_inspections}`);
   console.log(`  confidence_pct     : ${finalCs.confidence_pct}%`);
   console.log(`  reason             : ${finalCs.reason}`);
 
+  assertEq("verification_failed = true (fail-closed enforced)", finalCs.verification_failed, true);
+  assertEq("verified_inspections = 0 (fake permits unconfirmed)", finalCs.verified_inspections, 0);
   assertEq("status = finalized", p.status, "finalized");
   assertEq("payment_released = true", p.payment_released, true);
   assertEq("escrow_deposited = 0 (GEN left contract)", p.escrow_deposited, "0");

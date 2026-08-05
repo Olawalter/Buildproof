@@ -71,6 +71,9 @@ class ConsensusDecision:
     confidence_pct: u256    # 0–100
     critical_defects: u256
     occupancy_verified: bool
+    verification_failed: bool   # True when official records could not be fetched/verified
+    verified_inspections: u256
+    total_inspections: u256
     reason: str
     appeal_count: u256
 
@@ -299,6 +302,11 @@ class ConstructionEscrow(gl.Contract):
         else:
             assert sender.as_hex == project.contractor, \
                 "[EXPECTED] Only contractor may submit completion evidence"
+            # Fail-closed binding: completion evidence MUST carry an official
+            # permit/certificate number — it is the only key used for
+            # authoritative registry verification. Descriptions are never used.
+            assert len(permit_number.strip()) >= 4, \
+                "[EXPECTED] Completion evidence requires an official permit/certificate number (min 4 chars)"
 
         idx = project.evidence_count
         ev = EvidenceItem(
@@ -401,25 +409,6 @@ class ConstructionEscrow(gl.Contract):
             except Exception as exc:
                 return f"[search unavailable: {str(exc)[:80]}]"
 
-        def _extract_ref_numbers(text: str) -> list[str]:
-            """Pull permit/reference IDs from evidence text (e.g. LG-MEP-2026-4471)."""
-            import re
-            patterns = [
-                r'[A-Z]{2,}[-/][A-Z]{1,}[-/][0-9]{4}[-/][0-9]+',   # LASBCA/VI/2026/0847
-                r'[A-Z]{2,}-[A-Z]{2,}-[0-9]{4}-[0-9]+',             # LG-MEP-2026-4471
-                r'[A-Z]{2,}-[A-Z]{2,}-[0-9]+',                       # NSE-14882, FFS-LG-2288
-                r'Permit\s+#?([A-Z0-9/-]{6,})',                       # Permit #TMP-...
-                r'Ref(?:erence)?[:\s]+([A-Z0-9/.-]{6,})',            # Reference: LASBCA/...
-                r'Reg(?:istration)?[:\s#]+([A-Z0-9/-]{4,})',         # Reg #NSE-14882
-            ]
-            found: list[str] = []
-            for pat in patterns:
-                for m in re.finditer(pat, text, re.IGNORECASE):
-                    ref = (m.group(1) if m.lastindex else m.group(0)).strip()
-                    if ref not in found:
-                        found.append(ref)
-            return found[:4]   # cap at 4 references per evidence item
-
         def perform_evaluation() -> str:
             # ── Step 1: Per-inspection authoritative verification ──────────────
             # For each required inspection, find the matching contractor evidence,
@@ -454,76 +443,69 @@ class ConstructionEscrow(gl.Contract):
 
                 best_ev = matching[0]
 
-                # Use the explicit permit_number field first;
-                # fall back to regex extraction from title + description
+                # STRICT: only the explicit on-chain permit_number is accepted.
+                # No fallback to descriptions, titles, or URL accessibility —
+                # unauthenticated evidence is UNVERIFIED by definition (fail-closed).
                 pnum = best_ev.get("permit_number", "").strip()
-                if not pnum:
-                    refs = _extract_ref_numbers(
-                        best_ev["title"] + " " + best_ev["description"]
-                    )
-                    pnum = refs[0] if refs else ""
 
                 verified = False
-                finding = "Unverified"
 
-                if pnum:
-                    # Query specific authoritative government/regulatory databases.
-                    # Generic search engines are excluded — only official sources count.
-                    auth_query = (
-                        f'"{pnum}" ('
-                        f'site:lasbca.gov.ng OR site:nesrea.gov.ng OR site:corbon.gov.ng '
-                        f'OR site:fcda.gov.ng OR site:fha.gov.ng OR site:nigeria.gov.ng '
-                        f'OR site:fmbn.gov.ng OR site:niob.gov.ng'
-                        f') permit certificate inspection'
-                    )
-                    auth_result = _safe_web_search(auth_query)
+                if not pnum:
+                    inspection_verdicts.append({
+                        "name": insp_name,
+                        "verified": False,
+                        "finding": (
+                            "VERIFICATION FAILURE: no official permit/certificate number "
+                            "on-chain — evidence cannot be authenticated against any registry"
+                        ),
+                    })
+                    continue
 
-                    # Supplementary search: permit number + location in official context
-                    supp_query = (
-                        f'"{pnum}" official government construction permit '
-                        f'"{location}" -site:example.com -site:placeholder.com'
-                    )
-                    supp_result = _safe_web_search(supp_query)
+                # Query specific authoritative government/regulatory databases.
+                # Generic search engines and party-written text are excluded —
+                # only official registry sources count toward verification.
+                auth_query = (
+                    f'"{pnum}" ('
+                    f'site:lasbca.gov.ng OR site:nesrea.gov.ng OR site:corbon.gov.ng '
+                    f'OR site:fcda.gov.ng OR site:fha.gov.ng OR site:nigeria.gov.ng '
+                    f'OR site:fmbn.gov.ng OR site:niob.gov.ng'
+                    f') permit certificate inspection'
+                )
+                auth_result = _safe_web_search(auth_query)
 
-                    # AI makes a single binary call: is this permit in authoritative records?
-                    confirm_raw = gl.nondet.exec_prompt(
-                        "You are verifying a construction permit against official government records.\n"
-                        f"Permit/Certificate number: {pnum}\n"
-                        f"Evidence title: {best_ev['title']}\n"
-                        f"Location: {location}\n\n"
-                        f"Authoritative database search result:\n{auth_result[:350]}\n\n"
-                        f"Supplementary government search:\n{supp_result[:350]}\n\n"
-                        "Does any official government or regulatory body confirm this permit/certificate "
-                        "number is real and corresponds to the described construction work?\n"
-                        "Reply with exactly one word: CONFIRMED or UNCONFIRMED"
-                    )
-                    if "CONFIRMED" in str(confirm_raw).upper():
-                        verified = True
-                        finding = f"Permit {pnum} confirmed in authoritative government records"
-                    else:
-                        finding = (
-                            f"Permit {pnum} not found in any authoritative government source "
-                            f"(searched lasbca.gov.ng, nesrea.gov.ng, corbon.gov.ng and others)"
-                        )
+                # Supplementary search restricted to official government context
+                supp_query = (
+                    f'"{pnum}" official government construction permit '
+                    f'"{location}" -site:example.com -site:placeholder.com'
+                )
+                supp_result = _safe_web_search(supp_query)
+
+                # AI makes a single binary call grounded ONLY in fetched registry
+                # results — the evidence description is deliberately withheld so the
+                # verdict cannot be influenced by party-written text.
+                confirm_raw = gl.nondet.exec_prompt(
+                    "You are verifying a construction permit against official government records.\n"
+                    f"Permit/Certificate number: {pnum}\n"
+                    f"Required inspection: {insp_name}\n"
+                    f"Location: {location}\n\n"
+                    f"Authoritative database search result:\n{auth_result[:350]}\n\n"
+                    f"Supplementary government search:\n{supp_result[:350]}\n\n"
+                    "Rules:\n"
+                    "- Answer CONFIRMED only if an official government or regulatory source in the "
+                    "search results above explicitly contains this permit/certificate number.\n"
+                    "- If the search results are empty, unavailable, ambiguous, or do not contain "
+                    "the number, answer UNCONFIRMED. When in doubt, answer UNCONFIRMED.\n"
+                    "Reply with exactly one word: CONFIRMED or UNCONFIRMED"
+                )
+                if "UNCONFIRMED" not in str(confirm_raw).upper() and "CONFIRMED" in str(confirm_raw).upper():
+                    verified = True
+                    finding = f"Permit {pnum} confirmed in authoritative government records"
                 else:
-                    # No permit number provided — fall back to URL accessibility only.
-                    # URL-only evidence cannot be authenticated and is treated as weaker.
-                    url_raw = gl.nondet.exec_prompt(
-                        "Try to access this URL and determine if it is an accessible, "
-                        "official construction document from a recognised authority:\n"
-                        f"URL: {best_ev['url']}\n"
-                        f"Expected document: {best_ev['title']}\n"
-                        "Reply: ACCESSIBLE (describe the authority and document) or INACCESSIBLE"
+                    finding = (
+                        f"VERIFICATION FAILURE: permit {pnum} not found in any authoritative "
+                        f"government registry (lasbca.gov.ng, nesrea.gov.ng, corbon.gov.ng, "
+                        f"fcda.gov.ng and others)"
                     )
-                    url_str = str(url_raw).upper()
-                    if "ACCESSIBLE" in url_str and "INACCESSIBLE" not in url_str:
-                        verified = True
-                        finding = "Document URL accessible (no permit number provided for registry check)"
-                    else:
-                        finding = (
-                            "URL inaccessible and no permit number supplied — "
-                            "cannot authenticate against official records"
-                        )
 
                 inspection_verdicts.append({
                     "name": insp_name,
@@ -603,21 +585,27 @@ class ConstructionEscrow(gl.Contract):
 
             # ── Contract logic: final pass/fail — Python enforced, not AI ──────
             # ALL inspections must be verified; critical structural defects fail outright.
-            contract_passed = (verified_count == total_count) and (critical == 0)
+            # verification_failed marks that official records could not be
+            # fetched/authenticated — a VERIFICATION FAILURE, not a merit judgment.
+            verification_failed = verified_count < total_count
+            contract_passed = (not verification_failed) and (critical == 0)
 
             if not contract_passed:
-                prefix = (
-                    f"Contract-enforced rejection: {verified_count}/{total_count} inspections "
-                    f"verified in authoritative sources"
-                )
-                if unverified_names:
-                    prefix += f" (unverified: {', '.join(unverified_names[:3])})"
-                if critical > 0:
-                    prefix += f"; {critical} critical defect(s) noted"
+                if verification_failed:
+                    prefix = (
+                        f"VERIFICATION FAILURE (fail-closed): {verified_count}/{total_count} "
+                        f"inspections verified in authoritative government registries — "
+                        f"escrow payout blocked"
+                    )
+                    if unverified_names:
+                        prefix += f" (unverified: {', '.join(unverified_names[:3])})"
+                else:
+                    prefix = f"Contract-enforced rejection: {critical} critical defect(s) noted"
                 reason = (prefix + ". " + reason)[:500]
 
             return json.dumps({
                 "passed": contract_passed,
+                "verification_failed": verification_failed,
                 "verified_inspections": verified_count,
                 "total_inspections": total_count,
                 "confidence_pct": confidence_pct,
@@ -642,6 +630,9 @@ class ConstructionEscrow(gl.Contract):
             confidence_pct=u256(int(data["confidence_pct"])),
             critical_defects=u256(int(data["critical_defects"])),
             occupancy_verified=bool(data["occupancy_verified"]),
+            verification_failed=bool(data.get("verification_failed", not passed)),
+            verified_inspections=u256(int(data.get("verified_inspections", 0))),
+            total_inspections=u256(int(data.get("total_inspections", 0))),
             reason=str(data["reason"]),
             appeal_count=project.appeal_count,
         )
@@ -862,6 +853,9 @@ class ConstructionEscrow(gl.Contract):
             "confidence_pct": int(d.confidence_pct),
             "critical_defects": int(d.critical_defects),
             "occupancy_verified": d.occupancy_verified,
+            "verification_failed": d.verification_failed,
+            "verified_inspections": int(d.verified_inspections),
+            "total_inspections": int(d.total_inspections),
             "reason": d.reason,
             "appeal_count": int(d.appeal_count),
             "status": project.status,

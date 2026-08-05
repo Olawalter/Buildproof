@@ -115,12 +115,17 @@ async function main() {
     await write(contractorClient, `evidence:${type}`, "submit_evidence", [pid, type, title, url, desc, pnum, false]);
   }
 
+  sep("FAIL-CLOSED — completion evidence without permit_number must revert");
+  await expectRevert(contractorClient, "evidence without permit number (must reject)",
+    "submit_evidence",
+    [pid, "photo", "Unbound Photo", "https://docs.example.com/photo.jpg", "No official reference", "", false]);
+
   sep("FIX #6 — submit_evidence blocked after request_inspection");
   await write(contractorClient, "request_inspection", "request_inspection", [pid]);
   // Contractor tries to add more evidence after inspection requested — must revert
   await expectRevert(contractorClient, "evidence after inspection requested (must reject)",
     "submit_evidence",
-    [pid, "photo", "Late addition", "https://docs.example.com/late.jpg", "Should not be accepted", "", false]);
+    [pid, "photo", "Late addition", "https://docs.example.com/late.jpg", "Should not be accepted", "PHT-2026-0001", false]);
 
   sep("EITHER PARTY — evaluate_completion callable by both parties");
   // Both parties can now trigger evaluation — no rejection expected

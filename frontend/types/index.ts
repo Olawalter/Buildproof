@@ -83,6 +83,9 @@ export interface ConsensusStatus {
   confidence_pct?: number;
   critical_defects?: number;
   occupancy_verified?: boolean;
+  verification_failed?: boolean;
+  verified_inspections?: number;
+  total_inspections?: number;
   reason?: string;
   appeal_count?: number;
   appeals: AppealRecord[];
