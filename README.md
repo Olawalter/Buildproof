@@ -6,7 +6,7 @@ BuildProof solves a specific, chronic trust problem in construction: contractors
 
 **Live demo:** https://buildproof-topaz.vercel.app
 
-**Contract on StudioNet:** `0xE0af402C78D1d9764c9E086aB03634EC8a839994`
+**Contract on StudioNet:** `0xD101C412045fF5899a0115eF38270eC249E24FeC`
 
 ---
 
@@ -201,7 +201,7 @@ NEXT_PUBLIC_GENLAYER_RPC_URL=https://studio.genlayer.com/api
 NEXT_PUBLIC_GENLAYER_CHAIN_ID=61999
 NEXT_PUBLIC_GENLAYER_CHAIN_NAME=GenLayer Studio
 NEXT_PUBLIC_GENLAYER_SYMBOL=GEN
-NEXT_PUBLIC_CONTRACT_ADDRESS=0xE0af402C78D1d9764c9E086aB03634EC8a839994
+NEXT_PUBLIC_CONTRACT_ADDRESS=0xD101C412045fF5899a0115eF38270eC249E24FeC
 NEXT_PUBLIC_NETWORK=studionet
 ```
 
@@ -312,4 +312,4 @@ Buildproof/
 | Chain ID | 61999 |
 | RPC | https://studio.genlayer.com/api |
 | Explorer | https://explorer-studio.genlayer.com |
-| Contract | `0xE0af402C78D1d9764c9E086aB03634EC8a839994` |
+| Contract | `0xD101C412045fF5899a0115eF38270eC249E24FeC` |
