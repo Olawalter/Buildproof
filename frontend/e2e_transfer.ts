@@ -181,22 +181,28 @@ async function main() {
   assertEq("evidence_count", p.evidence_count, 3);
   assertEq("status after evidence", p.status, "evidence_submitted");
 
-  sep("FAIL-CLOSED — completion evidence without permit number must revert");
+  sep("FAIL-CLOSED — completion evidence without permit number must not change state");
+  // Verify by reading evidence_count before and after — more reliable than
+  // txExecutionResultName since GenLayer may finalize the tx without ERROR status
+  // even when an assertion fires (state is still rolled back).
+  const countBefore = Number((await read("project_details", [pid]) as any).evidence_count);
   try {
     const h: Hash = await contractorClient.writeContract({
       address: CONTRACT, functionName: "submit_evidence",
       args: [pid, "photo", "No Permit Photo", "https://example.com/photo", "Photo without permit.", "", false],
       value: 0n,
     });
-    await finalize(contractorClient, h, "evidence without permit_number");
-    throw new Error("Assertion failed — evidence without permit_number was ACCEPTED (should revert)");
-  } catch (err: any) {
-    const msg = String(err?.message ?? err);
-    if (msg.includes("should revert") || msg.includes("was ACCEPTED")) throw err;
-    console.log("  ✅ assert evidence without permit_number correctly rejected on-chain");
-  }
+    // Wait for finalization regardless of execution result
+    await contractorClient.waitForTransactionReceipt({
+      hash: h, status: 7 as any, interval: 5_000, retries: 60,
+    });
+  } catch (_) { /* tx may error at network level — that's fine */ }
   p = await read("project_details", [pid]);
-  assertEq("evidence_count unchanged after rejected submission", p.evidence_count, 3);
+  const countAfter = Number(p.evidence_count);
+  if (countAfter > countBefore) {
+    throw new Error(`Assertion failed — evidence without permit_number was accepted (count ${countBefore} → ${countAfter})`);
+  }
+  console.log(`  ✅ assert evidence without permit_number blocked (count stayed at ${countBefore})`);
 
   // ── APPEAL LOOP ────────────────────────────────────────────────────────────
   // 3 rounds: request_inspection → evaluate (rejected) → submit_appeal → reopen
